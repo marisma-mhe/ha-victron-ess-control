@@ -1,0 +1,13 @@
+{
+  "domain": "victron_ess_control",
+  "name": "Victron ESS Control",
+  "version": "0.1.0",
+  "documentation": "https://github.com/marisma-mhe/ha-victron-ess-control",
+  "issue_tracker": "https://github.com/marisma-mhe/ha-victron-ess-control/issues",
+  "dependencies": ["mqtt"],
+  "after_dependencies": ["victron_mqtt"],
+  "codeowners": ["@marisma-mhe"],
+  "config_flow": true,
+  "iot_class": "local_push",
+  "requirements": []
+}
