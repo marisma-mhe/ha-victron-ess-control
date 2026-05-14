@@ -8,8 +8,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 
 from .const import (
-    CONF_BATTERY_CAPACITY,
-    CONF_CHARGE_EFFICIENCY,
     CONF_CONSUMER_SERIAL,
     CONF_GRID_SERIAL,
     DOMAIN,
