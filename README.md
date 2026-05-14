@@ -194,6 +194,14 @@ Keepalive reads from:
 |---|---|
 | `R/<serial>/system/0/serial` | Empty read-request to keep VenusOS publishing |
 
+## Disclaimer
+
+This software controls battery charging, grid feed-in power, and other parameters of a Victron Energy ESS system. Incorrect configuration may affect battery health, grid compliance, or system stability.
+
+**Use at your own risk.** The authors accept no liability for any damage to your Home Assistant instance, Victron components, solar installation, electrical infrastructure, or any other property or systems, whether arising from correct or incorrect use of this software.
+
+Always verify automation behavior in your specific installation. Consult a qualified electrician or energy system professional if in doubt.
+
 ## License
 
 [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) — Attribution, NonCommercial, ShareAlike.
