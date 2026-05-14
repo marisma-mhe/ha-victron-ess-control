@@ -1,16 +1,24 @@
 # ha-victron-ess-control
 
-Automation suite for Victron Energy ESS systems in Home Assistant. Provides smart battery charge/discharge control, dynamic grid feed-in management, storm protection, and Lovelace dashboard views.
+Custom integration for Victron Energy ESS systems in Home Assistant. Provides guided setup (config flow), the helper/sensor package, and a package deployment wizard.
 
-## Features
+> **Blueprints and dashboard views** are in the companion repo **[ha-victron-ess-frontend](https://github.com/marisma-mhe/ha-victron-ess-frontend)** — install that via HACS (Blueprint category) after this integration.
 
-- **Daytime feed-in control** — dynamically caps grid export based on battery SOC, solar forecast, and voltage
-- **Max feed-in power control** — voltage-curve-based export limit that backs off as grid voltage rises
-- **Smart overnight charging** — weather-aware SOC target, shifts charging window to the latest viable start time
-- **Storm mode** — automatically charges battery to a high SOC before forecast storms; manual override available
-- **MQTT keep-alive** — prevents VenusOS from stopping MQTT publishing after inactivity
-- **Daytime window** — tracks today's sunrise/sunset for use in time-based conditions
-- **Dashboard views** — Lovelace YAML panels for all subsystems
+## What This Repo Provides
+
+- **Guided setup wizard** — config flow collects serials, battery capacity; deploys `packages/victron_ess.yaml` with values filled in
+- **Helper + sensor package** (`packages/victron_ess.yaml`) — all `input_*` helpers, canonical `sensor.victron_ess_*` template sensors, utility meters
+- **Manual installation path** — package file can be used standalone without the integration
+
+## What Goes in the Companion Repo
+
+All automation blueprints and Lovelace dashboard views live in **[ha-victron-ess-frontend](https://github.com/marisma-mhe/ha-victron-ess-frontend)**:
+
+- Daytime feed-in control, max feed-in power control
+- Smart overnight charging, pre-midnight decision
+- Storm mode auto-control, storm forecast fetch
+- MQTT keep-alive, daytime window
+- 5 Lovelace dashboard views
 
 ## Requirements
 

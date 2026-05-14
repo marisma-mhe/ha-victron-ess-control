@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import shutil
 from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
@@ -22,10 +21,9 @@ _COMPONENT_DIR = Path(__file__).parent
 _REPO_ROOT = _COMPONENT_DIR.parent.parent
 
 
-def _deploy_files(hass: HomeAssistant, grid_serial: str, consumer_serial: str) -> None:
+def _deploy_package(hass: HomeAssistant, grid_serial: str, consumer_serial: str) -> None:
     config_dir = Path(hass.config.config_dir)
 
-    # ── Package file ───────────────────────────────────────────────────────────
     pkg_src = _REPO_ROOT / "packages" / "victron_ess.yaml"
     pkg_dst_dir = config_dir / "packages"
     pkg_dst_dir.mkdir(exist_ok=True)
@@ -36,19 +34,6 @@ def _deploy_files(hass: HomeAssistant, grid_serial: str, consumer_serial: str) -
     content = content.replace("<YOUR_CONSUMER_SYSTEM_ID>", consumer_serial)
     pkg_dst.write_text(content)
     _LOGGER.info("Wrote %s", pkg_dst)
-
-    # ── Blueprints ─────────────────────────────────────────────────────────────
-    bp_src = _REPO_ROOT / "blueprints" / "automation" / "victron"
-    bp_dst = config_dir / "blueprints" / "automation" / "victron"
-    bp_dst.mkdir(parents=True, exist_ok=True)
-
-    for src_file in bp_src.glob("*.yaml"):
-        dst_file = bp_dst / src_file.name
-        if not dst_file.exists():
-            shutil.copy2(src_file, dst_file)
-            _LOGGER.info("Installed blueprint: %s", src_file.name)
-        else:
-            _LOGGER.debug("Blueprint already exists, skipping: %s", src_file.name)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -72,20 +57,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     try:
         await hass.async_add_executor_job(
-            _deploy_files, hass, grid_serial, consumer_serial
+            _deploy_package, hass, grid_serial, consumer_serial
         )
     except Exception as exc:
-        _LOGGER.exception("Failed to deploy Victron ESS Control files")
-        raise ConfigEntryNotReady(f"File deployment failed: {exc}") from exc
+        _LOGGER.exception("Failed to deploy Victron ESS Control package")
+        raise ConfigEntryNotReady(f"Package deployment failed: {exc}") from exc
 
     hass.components.persistent_notification.async_create(
         message=(
             "**Victron ESS Control** has been set up.\n\n"
             f"- Grid serial: `{grid_serial}`\n"
             f"- Consumer serial: `{consumer_serial}`\n\n"
-            "`packages/victron_ess.yaml` and blueprints have been installed. "
+            "`packages/victron_ess.yaml` has been written. "
             "**Restart Home Assistant** to load the helpers and template sensors.\n\n"
-            "After restart, create automation instances from the installed blueprints "
+            "Blueprints are provided by **[ha-victron-ess-frontend]"
+            "(https://github.com/marisma-mhe/ha-victron-ess-frontend)** — "
+            "install it via HACS (Blueprint category), then create automation instances "
             "under Settings → Automations → Blueprints."
         ),
         title="Victron ESS Control: Restart Required",
