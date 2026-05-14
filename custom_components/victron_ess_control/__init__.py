@@ -16,13 +16,12 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 _COMPONENT_DIR = Path(__file__).parent
-_REPO_ROOT = _COMPONENT_DIR.parent.parent
 
 
 def _deploy_package(hass: HomeAssistant, grid_serial: str, consumer_serial: str) -> None:
     config_dir = Path(hass.config.config_dir)
 
-    pkg_src = _REPO_ROOT / "packages" / "victron_ess.yaml"
+    pkg_src = _COMPONENT_DIR / "packages" / "victron_ess.yaml"
     pkg_dst_dir = config_dir / "packages"
     pkg_dst_dir.mkdir(exist_ok=True)
     pkg_dst = pkg_dst_dir / "victron_ess.yaml"
@@ -32,6 +31,17 @@ def _deploy_package(hass: HomeAssistant, grid_serial: str, consumer_serial: str)
     content = content.replace("<YOUR_CONSUMER_SYSTEM_ID>", consumer_serial)
     pkg_dst.write_text(content)
     _LOGGER.info("Wrote %s", pkg_dst)
+
+
+def _deploy_blueprints(hass: HomeAssistant) -> None:
+    src = _COMPONENT_DIR / "blueprints" / "automation" / "victron"
+    dst = Path(hass.config.config_dir) / "blueprints" / "automation" / "victron"
+    dst.mkdir(parents=True, exist_ok=True)
+    for bp in src.glob("*.yaml"):
+        target = dst / bp.name
+        if not target.exists():
+            target.write_bytes(bp.read_bytes())
+            _LOGGER.info("Installed blueprint %s", bp.name)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -57,6 +67,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await hass.async_add_executor_job(
             _deploy_package, hass, grid_serial, consumer_serial
         )
+        await hass.async_add_executor_job(_deploy_blueprints, hass)
     except Exception as exc:
         _LOGGER.exception("Failed to deploy Victron ESS Control package")
         raise ConfigEntryNotReady(f"Package deployment failed: {exc}") from exc
@@ -66,12 +77,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "**Victron ESS Control** has been set up.\n\n"
             f"- Grid serial: `{grid_serial}`\n"
             f"- Consumer serial: `{consumer_serial}`\n\n"
-            "`packages/victron_ess.yaml` has been written. "
-            "**Restart Home Assistant** to load the helpers and template sensors.\n\n"
-            "Blueprints are provided by **[ha-victron-ess-frontend]"
-            "(https://github.com/marisma-mhe/ha-victron-ess-frontend)** — "
-            "install it via HACS (Blueprint category), then create automation instances "
-            "under Settings → Automations → Blueprints."
+            "`packages/victron_ess.yaml` has been written and blueprints have been "
+            "installed under `blueprints/automation/victron/`.\n\n"
+            "**Restart Home Assistant** to load the helpers and template sensors, "
+            "then create automation instances under Settings → Automations → Blueprints."
         ),
         title="Victron ESS Control: Restart Required",
         notification_id=f"{DOMAIN}_setup",

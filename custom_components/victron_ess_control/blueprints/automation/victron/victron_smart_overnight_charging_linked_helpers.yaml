@@ -1,0 +1,379 @@
+#
+# Required helpers (provided by packages/victron_ess.yaml):
+#
+#  input_text.victron_grid_system_id
+#  input_number.victron_charge_power, input_number.victron_soc_floor,
+#    input_number.victron_target_soc_normal, input_number.victron_target_soc_storm
+#  input_number.battery_capacity_kwh
+#  input_datetime.victron_night_start, input_datetime.victron_night_end
+#  input_select.victron_charge_override
+#  input_boolean.storm_mode
+# Sensors: sensor.victron_ess_battery_soc,
+#   sensor.solcast_weighted_remaining_today_kwh,
+#   sensor.solcast_weighted_remaining_tomorrow_kwh,
+#   sensor.victron_dynamic_target_soc_now
+#
+
+
+blueprint:
+  name: Victron Smart Overnight Charging (Linked Helpers, UI)
+  description: >
+    Grid charging for Victron ESS with directly wired dashboard helpers.
+    - All parameters come from input_* helpers (config page)
+    - No discharging (only +W or 0)
+    - SOC floor protection
+    - Night window via input_datetime (runtime check, midnight-safe)
+    - Override: Auto / Force Charge / Block Charge
+    - Dynamic target via sensor (victron_dynamic_target_soc_now) overrides Normal/Storm when > 0
+  domain: automation
+  source_url: https://github.com/marisma-mhe/ha-victron-ess-control/blob/main/blueprints/automation/victron/victron_smart_overnight_charging_linked_helpers.yaml
+
+  input:
+    # --- Entities from the config page ---
+    mqtt_topic_entity:
+      name: Victron System ID (input_text, portal serial)
+      description: >
+        input_text containing the Victron portal serial / system ID.
+        The MQTT write topic is constructed from this value automatically.
+        Default: input_text.victron_grid_system_id
+      selector: { entity: { filter: [ domain: input_text ] } }
+      default: input_text.victron_grid_system_id
+
+    charge_power_entity:
+      name: Charge power (input_number)
+      selector: { entity: { filter: [ domain: input_number ] } }
+      default: input_number.victron_charge_power
+
+    soc_floor_entity:
+      name: SOC floor (input_number)
+      selector: { entity: { filter: [ domain: input_number ] } }
+      default: input_number.victron_soc_floor
+
+    normal_target_entity:
+      name: Target SOC — normal mode (input_number)
+      selector: { entity: { filter: [ domain: input_number ] } }
+      default: input_number.victron_target_soc_normal
+
+    storm_target_entity:
+      name: Target SOC — storm mode (input_number)
+      selector: { entity: { filter: [ domain: input_number ] } }
+      default: input_number.victron_target_soc_storm
+
+    battery_capacity_entity:
+      name: Battery capacity (input_number, kWh)
+      selector: { entity: { filter: [ domain: input_number ] } }
+      default: input_number.battery_capacity_kwh
+
+    storm_mode_entity:
+      name: Storm mode flag (input_boolean)
+      selector: { entity: { filter: [ domain: input_boolean ] } }
+      default: input_boolean.storm_mode
+
+    night_start_entity:
+      name: Night window start (input_datetime)
+      selector: { entity: { filter: [ domain: input_datetime ] } }
+      default: input_datetime.victron_night_start
+
+    night_end_entity:
+      name: Night window end (input_datetime)
+      selector: { entity: { filter: [ domain: input_datetime ] } }
+      default: input_datetime.victron_night_end
+
+    override_select_entity:
+      name: Charge override (input_select)
+      selector: { entity: { filter: [ domain: input_select ] } }
+      default: input_select.victron_charge_override
+
+    # --- Status / sensor entities ---
+    soc_sensor:
+      name: Battery SOC sensor
+      selector: { entity: { filter: [ domain: sensor ] } }
+      default: sensor.victron_ess_battery_soc
+
+    solcast_remaining_today_sensor:
+      name: Solcast remaining today (kWh)
+      selector: { entity: { filter: [ domain: sensor ] } }
+      default: sensor.solcast_weighted_remaining_today_kwh
+
+    solcast_remaining_tomorrow_sensor:
+      name: Solcast remaining tomorrow (kWh)
+      selector: { entity: { filter: [ domain: sensor ] } }
+      default: sensor.solcast_weighted_remaining_tomorrow_kwh
+
+    dyn_target_sensor:
+      name: Dynamic target SOC (computed, 0 = disabled)
+      description: >
+        sensor.victron_dynamic_target_soc_now — overrides Normal/Storm base when > 0.
+      selector: { entity: { filter: [ domain: sensor ] } }
+      default: sensor.victron_dynamic_target_soc_now
+
+    charge_efficiency_entity:
+      name: Charge efficiency (input_number, 0.80–1.00)
+      description: Used to inflate the battery charge need by the round-trip loss.
+      selector: { entity: { filter: [ domain: input_number ] } }
+      default: input_number.charge_efficiency
+
+    daily_consumption_kwh_entity:
+      name: Daily consumption target (input_number, kWh)
+      description: >
+        Expected daily consumption. Solar covers this first; the remainder is
+        net solar used for the charge-need calculation.
+      selector: { entity: { filter: [ domain: input_number ] } }
+      default: input_number.daily_consumption_kwh
+
+    # --- Debug (optional) ---
+    last_reason_text:
+      name: (Optional) input_text for last decision log
+      default: ""
+      selector: { entity: { filter: [ domain: input_text ] } }
+
+mode: restart
+
+# ---------- Variables: entity IDs for triggers ----------
+variables:
+  mqtt_topic_entity: !input mqtt_topic_entity
+  charge_power_entity: !input charge_power_entity
+  soc_floor_entity: !input soc_floor_entity
+  normal_target_entity: !input normal_target_entity
+  storm_target_entity: !input storm_target_entity
+  battery_capacity_entity: !input battery_capacity_entity
+  storm_mode_entity: !input storm_mode_entity
+  night_start_entity: !input night_start_entity
+  night_end_entity: !input night_end_entity
+  override_select_entity: !input override_select_entity
+  soc_sensor: !input soc_sensor
+  solcast_remaining_today_sensor: !input solcast_remaining_today_sensor
+  solcast_remaining_tomorrow_sensor: !input solcast_remaining_tomorrow_sensor
+  dyn_target_sensor: !input dyn_target_sensor
+  charge_efficiency_entity: !input charge_efficiency_entity
+  daily_consumption_kwh_entity: !input daily_consumption_kwh_entity
+  last_reason_text: !input last_reason_text
+
+# ---------- Triggers: helper changes + SOC/forecast + schedule ----------
+trigger:
+  - platform: state
+    entity_id:
+      - !input mqtt_topic_entity
+      - !input charge_power_entity
+      - !input soc_floor_entity
+      - !input normal_target_entity
+      - !input storm_target_entity
+      - !input storm_mode_entity
+      - !input night_start_entity
+      - !input night_end_entity
+      - !input override_select_entity
+      - !input dyn_target_sensor
+      - !input solcast_remaining_today_sensor
+      - !input solcast_remaining_tomorrow_sensor
+      - !input soc_sensor
+      - !input charge_efficiency_entity
+      - !input daily_consumption_kwh_entity
+
+  # Exact window boundaries: charge start and end
+  - platform: time
+    at: !input night_start_entity
+  - platform: time
+    at: !input night_end_entity
+
+  # Fallback schedule: covers HA restarts and rarely missed triggers
+  - platform: time_pattern
+    minutes: "/30"
+
+condition: []
+
+action:
+  - variables:
+      topic: "victron/W/{{ states(mqtt_topic_entity) }}/settings/0/Settings/CGwacs/AcPowerSetPoint"
+      power: "{{ states(charge_power_entity) | int(0) }}"
+      floor: "{{ states(soc_floor_entity) | float(20) }}"
+      base_normal: "{{ states(normal_target_entity) | float(80) }}"
+      base_storm:  "{{ states(storm_target_entity)  | float(90) }}"
+      soc_raw: "{{ states(soc_sensor) }}"
+      soc_valid: "{{ states(soc_sensor) | is_number }}"
+      soc:  "{{ states(soc_sensor) | float(0) }}"
+      dyn:  "{{ states(dyn_target_sensor) | float(0) }}"
+      mode: "{{ states(override_select_entity) }}"
+      # Night window runtime check (midnight-safe: start > end means window crosses midnight)
+      inwin: >-
+        {% set s = today_at(states(night_start_entity)) %}
+        {% set e = today_at(states(night_end_entity)) %}
+        {{ (now() >= s and now() < e) if s <= e else (now() >= s or now() < e) }}
+
+      # Solar forecast
+      remaining_today:   "{{ states(solcast_remaining_today_sensor)   | float(0) }}"
+      forecast_tomorrow: "{{ states(solcast_remaining_tomorrow_sensor) | float(0) }}"
+
+      # Cross-midnight-safe: when start > end the window crosses midnight (e.g. 22:00–06:00).
+      # Before midnight (now >= start) remaining_today ≈ 0 → use forecast_tomorrow.
+      # After midnight Solcast has already reset to today → use remaining_today.
+      # Edge case 00:00-08:00: s <= e, but in the evening (outside window, remaining_today ≈ 0)
+      # forecast_tomorrow is still the relevant value.
+      total_solar_kwh: >-
+        {% set s = today_at(states(night_start_entity)) %}
+        {% set e = today_at(states(night_end_entity)) %}
+        {% if s > e and now() >= s %}
+          {{ forecast_tomorrow }}
+        {% elif remaining_today < 0.5 and not inwin %}
+          {{ forecast_tomorrow }}
+        {% else %}
+          {{ remaining_today }}
+        {% endif %}
+
+      # Net solar: daily yield minus house consumption (solar covers consumption first)
+      daily_consumption_kwh: "{{ states(daily_consumption_kwh_entity) | float(60) }}"
+      net_solar_kwh: "{{ [total_solar_kwh - daily_consumption_kwh, 0] | max | round(2) }}"
+
+      cap: "{{ states(battery_capacity_entity) | float(0) }}"
+      storm_active: "{{ is_state(storm_mode_entity, 'on') }}"
+
+      # Dynamic target: dyn sensor overrides Normal/Storm when > 0
+      target_soc_dyn: >
+        {% if dyn > 0 %}
+        {{ dyn }}
+        {% elif storm_active %}
+        {{ base_storm }}
+        {% else %}
+        {{ base_normal }}
+        {% endif %}
+
+      # Effective target (at least floor)
+      target_soc: >
+        {% if target_soc_dyn < floor %}
+        {{ floor }}
+        {% else %}
+        {{ target_soc_dyn }}
+        {% endif %}
+
+      cap_factor: "{{ cap / 100 }}"
+      eff: "{{ states(charge_efficiency_entity) | float(0.95) }}"
+
+      # SOC in kWh
+      soc_kwh:    "{{ (soc * cap_factor) | float(0) }}"
+      target_kwh: "{{ (target_soc * cap_factor) | float(0) }}"
+      # net_solar * eff = energy actually stored in the battery
+      planed_kwh: "{{ soc_kwh + net_solar_kwh * eff }}"
+
+      # Solar sufficient? (SOC energy + net solar × efficiency ≥ target)
+      solar_enough: "{{ soc_kwh + net_solar_kwh * eff >= target_kwh }}"
+
+      # --- Decision text ---
+      decision_text: >-
+        {% if not soc_valid %}
+        ❌ Skip: SOC sensor unavailable ({{ soc_raw }}) — no charging
+        — inwin: {{ inwin }} · mode: {{ mode }}
+        {% elif soc < floor %}
+        ✅ Charging: SOC < floor
+        — inwin: {{ inwin }} · solar_enough: {{ solar_enough }} · soc < dyn: {{ soc < dyn }} · mode: {{ mode }}
+        — soc: {{ soc | float(0) }}, floor: {{ floor | float(0) }}, target_soc: {{ target_soc | float(0) }}, target_soc_dyn: {{ target_soc_dyn | float(0) }}
+        {% elif mode == 'Block Charge' %}
+        ❌ Block Charge (Override) → 0 W
+        — inwin: {{ inwin }} · soc: {{ soc | round(0) }}% · target_soc: {{ target_soc | round(0) }}%
+        {% elif mode == 'Force Charge' and inwin %}
+        ✅ Charging: Force Charge
+        — inwin: {{ inwin }} · solar_enough: {{ solar_enough }} · soc < dyn: {{ soc < dyn }} · mode: {{ mode }}
+        — sol:{{ total_solar_kwh|round(1) }} cons:{{ daily_consumption_kwh|round(1) }} net:{{ net_solar_kwh|round(1) }} soc:{{ soc_kwh|round(1) }}→{{ target_kwh|round(1) }}kWh plan:{{ planed_kwh|round(1) }}
+        {% elif inwin and not solar_enough and soc < target_soc %}
+        ✅ Charging: demand present
+        — inwin: {{ inwin }} · solar_enough: {{ solar_enough }} · soc < dyn: {{ soc < dyn }} · mode: {{ mode }}
+        — sol:{{ total_solar_kwh|round(1) }} cons:{{ daily_consumption_kwh|round(1) }} net:{{ net_solar_kwh|round(1) }} soc:{{ soc_kwh|round(1) }}→{{ target_kwh|round(1) }}kWh plan:{{ planed_kwh|round(1) }}
+        {% else %}
+        ❌ Skip: no charging needed
+        — inwin: {{ inwin }} · solar_enough: {{ solar_enough }} · soc < dyn: {{ soc < dyn }} · mode: {{ mode }}
+        — sol:{{ total_solar_kwh|round(1) }} cons:{{ daily_consumption_kwh|round(1) }} net:{{ net_solar_kwh|round(1) }} soc:{{ soc_kwh|round(1) }}→{{ target_kwh|round(1) }}kWh plan:{{ planed_kwh|round(1) }}
+        {% endif %}
+
+
+  # --- Write debug log (if configured) ---
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ last_reason_text | length > 0 }}"
+        sequence:
+          - action: input_text.set_value
+            target: { entity_id: !input last_reason_text }
+            data:
+              value: >-
+                [{{ now().strftime('%Y-%m-%d %H:%M') }}] → {{ decision_text }}
+
+
+  # Safety: missing MQTT topic → always send 0
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ not topic or topic in ['unknown', 'unavailable'] }}"
+        sequence:
+          - action: mqtt.publish
+            data: { topic: "homeassistant/log/victron_charge", payload: "MQTT topic missing; SetPoint=0" }
+          - action: mqtt.publish
+            data:
+              topic: "{{ topic if topic else 'victron/invalid' }}"
+              payload: '{"value": 0}'
+
+    default:
+      # 0) SOC-Sensor unavailable → kein Laden (Fallback 0 wäre fälschlicherweise < floor)
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ not soc_valid }}"
+            sequence:
+              - action: mqtt.publish
+                data:
+                  topic: "{{ topic }}"
+                  payload: '{"value": 0}'
+
+        default:
+          # 1) SOC floor protection — always
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ soc < floor }}"
+                sequence:
+                  - action: mqtt.publish
+                    data:
+                      topic: "{{ topic }}"
+                      payload: >
+                        {{ '{"value": ' ~ (power | int) ~ '}' }}
+
+            default:
+              # 2) Evaluate override
+              - choose:
+                  # Block Charge: never charge
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ mode == 'Block Charge' }}"
+                    sequence:
+                      - action: mqtt.publish
+                        data:
+                          topic: "{{ topic }}"
+                          payload: '{"value": 0}'
+
+                  # Force Charge: always charge inside window
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ mode == 'Force Charge' and inwin }}"
+                    sequence:
+                      - action: mqtt.publish
+                        data:
+                          topic: "{{ topic }}"
+                          payload: >
+                            {{ '{"value": ' ~ (power | int) ~ '}' }}
+
+                default:
+                  # 3) Auto: only inside window, only if solar insufficient and SOC < target
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ inwin }}"
+                          - condition: template
+                            value_template: "{{ soc < target_soc and not solar_enough }}"
+                        sequence:
+                          - action: mqtt.publish
+                            data:
+                              topic: "{{ topic }}"
+                              payload: >
+                                {{ '{"value": ' ~ (power | int) ~ '}' }}
+                    default:
+                      - action: mqtt.publish
+                        data:
+                          topic: "{{ topic }}"
+                          payload: '{"value": 0}'
