@@ -96,6 +96,10 @@ class VictronEssControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=_STEP_SCHEMA,
             errors=errors,
+            description_placeholders={
+                "victron_mqtt_name": "ha-victron-mqtt",
+                "victron_mqtt_url": "https://github.com/tomer-w/ha-victron-mqtt",
+            },
         )
 
     @staticmethod

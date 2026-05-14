@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Victron ESS Control Setup",
-        "description": "Configure your Victron Energy ESS system.\n\nFind your system serial in HA → Settings → Devices → search 'victron mqtt', or in VRM Portal → Installation → Device List → GX Device.\n\n**Requirement:** [ha-victron-mqtt](https://github.com/tomer-w/ha-victron-mqtt) must be installed and configured.",
+        "description": "Configure your Victron Energy ESS system.\n\nFind your system serial in HA → Settings → Devices → search 'victron mqtt', or in VRM Portal → Installation → Device List → GX Device.\n\n**Requirement:** [{victron_mqtt_name}]({victron_mqtt_url}) must be installed and configured.",
         "data": {
           "grid_serial": "Grid System Serial (GX device portal ID)",
           "consumer_serial": "Consumer System Serial (leave empty if same as grid)",
@@ -19,7 +19,7 @@
       }
     },
     "error": {
-      "victron_mqtt_missing": "ha-victron-mqtt integration is not installed. Install it via HACS first: https://github.com/tomer-w/ha-victron-mqtt",
+      "victron_mqtt_missing": "ha-victron-mqtt integration is not installed. Install it via HACS first (see {victron_mqtt_url}).",
       "victron_mqtt_not_configured": "ha-victron-mqtt is installed but not configured. Add it via Settings → Integrations first.",
       "invalid_serial": "Serial must be a non-empty hexadecimal string (6–16 characters).",
       "packages_not_enabled": "HA packages are not enabled. Add 'packages: !include_dir_named packages' under 'homeassistant:' in configuration.yaml, then restart HA before running setup.",
