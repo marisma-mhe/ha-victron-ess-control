@@ -4,6 +4,37 @@ Custom integration for Victron Energy ESS systems in Home Assistant. Provides gu
 
 > **Blueprints and dashboard views** are in the companion repo **[ha-victron-ess-frontend](https://github.com/marisma-mhe/ha-victron-ess-frontend)** — install that via HACS (Blueprint category) after this integration.
 
+## Background
+
+The Victron ESS out of the box offers limited flexibility for dynamic feed-in and charging control. This integration was built to fill that gap.
+
+**The installation it was developed on:**
+
+- **Grid connection:** Single-phase only (one phase from the grid provider)
+- **Grid-side inverters:** Master/Slave MultiPlus 48/5000/70-x — handles grid charging and feed-in for the single-phase connection
+- **House installation:** Three-phase setup with 3× MultiPlus 48/5000/70-100
+- **Solar:** 36 panels
+- **Battery:** 6× 16.6 kWh Boxion batteries (Solar Electrical System) — ~100 kWh total
+
+The system is largely off-grid capable, but during extended bad weather the grid connection is needed for overnight top-up charging.
+
+**The problem this solves:**
+
+Grid providers in Spain disconnect installations that feed in too aggressively or raise voltage too much on the local network. To stay within limits while still maximising self-consumption economics, the feed-in logic was tuned to:
+
+- Start exporting early in the day, as grid voltage is typically low in the morning
+- Back off export power gradually as grid voltage rises (voltage-curve control)
+- Apply a conservative default upper voltage threshold — configurable up to 252 V at the user's own risk
+- Always reserve enough battery capacity for overnight consumption
+
+The result is a near-zero electricity bill: any excess is exported to the grid (or virtual cloud storage), and the overnight charging automation covers the rare cases where solar alone is insufficient. Overnight charging runs between 00:00 and 08:00 at the lowest available tariff (Octopus Energy Spain).
+
+This setup and logic is generalised in the blueprints so it works for any Victron ESS installation — single-phase, three-phase, or dual-system.
+
+<img src="docs/IMG_3159.jpg" width="380" alt="Single-phase MultiPlus + MPPT chargers + Boxion batteries (grid side)">
+<img src="docs/IMG_3160.jpg" width="380" alt="Three-phase MultiPlus setup + Boxion batteries (house side)">
+<img src="docs/IMG_3161.jpg" width="380" alt="Cerbo GX, distribution panel, and inverter rack">
+
 ## What This Repo Provides
 
 - **Guided setup wizard** — config flow collects serials, battery capacity; deploys `packages/victron_ess.yaml` with values filled in
