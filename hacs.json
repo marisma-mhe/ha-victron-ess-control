@@ -1,5 +1,4 @@
 {
   "name": "Victron ESS Control",
-  "content_in_root": false,
   "homeassistant": "2024.6"
 }

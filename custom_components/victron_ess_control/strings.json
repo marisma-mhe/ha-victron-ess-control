@@ -21,7 +21,7 @@
     "error": {
       "victron_mqtt_missing": "ha-victron-mqtt integration is not installed. Install it via HACS first: https://github.com/tomer-w/ha-victron-mqtt",
       "victron_mqtt_not_configured": "ha-victron-mqtt is installed but not configured. Add it via Settings → Integrations first.",
-      "invalid_serial": "Serial must be a non-empty hexadecimal string (6–12 characters).",
+      "invalid_serial": "Serial must be a non-empty hexadecimal string (6–16 characters).",
       "packages_not_enabled": "HA packages are not enabled. Add 'packages: !include_dir_named packages' under 'homeassistant:' in configuration.yaml, then restart HA before running setup.",
       "unknown": "Unexpected error. Check the HA logs."
     },
