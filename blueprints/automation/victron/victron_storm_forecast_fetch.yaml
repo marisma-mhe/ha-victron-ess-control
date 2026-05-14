@@ -1,0 +1,104 @@
+blueprint:
+  name: Victron Storm – Forecast Fetch
+  description: >
+    Reads the daily weather forecast once a day (configurable time) and on HA
+    restart, then writes precipitation probability, precipitation amount, and
+    weather condition into three helper entities. These values are evaluated by
+    the Victron Storm Auto-Control blueprint.
+
+    Compatible with: weather.pirateweather, weather.openweathermap (daily forecast).
+
+    Prerequisites:
+      - input_number for precipitation probability (0–100 %)
+      - input_number for precipitation amount (mm)
+      - input_text for weather condition string
+      All three are provided by the Victron ESS package (packages/victron_ess.yaml).
+  domain: automation
+  source_url: https://github.com/marisma-mhe/ha-victron-ess-control/blob/main/blueprints/automation/victron/victron_storm_forecast_fetch.yaml
+
+  input:
+    weather_entity:
+      name: Weather Entity
+      description: >
+        Weather integration with daily forecast (weather.get_forecasts).
+        Tomorrow's value is read from forecast[1].
+      selector:
+        entity:
+          filter:
+            - domain: weather
+      default: weather.pirateweather
+
+    fetch_time:
+      name: Fetch Time
+      description: Time for the daily forecast fetch (default 06:00).
+      selector:
+        time: {}
+      default: "06:00:00"
+
+    precip_prob_entity:
+      name: Helper – Precipitation Probability (input_number)
+      description: Stores tomorrow's rain probability in percent (0–100).
+      selector:
+        entity:
+          filter:
+            - domain: input_number
+      default: input_number.storm_forecast_precip_prob
+
+    precip_mm_entity:
+      name: Helper – Precipitation Amount (input_number)
+      description: Stores tomorrow's expected rainfall in mm.
+      selector:
+        entity:
+          filter:
+            - domain: input_number
+      default: input_number.storm_forecast_precip_mm
+
+    condition_entity:
+      name: Helper – Weather Condition (input_text)
+      description: Stores tomorrow's condition string (e.g. rainy, sunny).
+      selector:
+        entity:
+          filter:
+            - domain: input_text
+      default: input_text.storm_forecast_condition
+
+variables:
+  weather_entity: !input weather_entity
+  precip_prob_entity: !input precip_prob_entity
+  precip_mm_entity: !input precip_mm_entity
+  condition_entity: !input condition_entity
+
+triggers:
+  - platform: time
+    at: !input fetch_time
+  - platform: homeassistant
+    event: start
+
+conditions: []
+
+actions:
+  - action: weather.get_forecasts
+    target:
+      entity_id: !input weather_entity
+    data:
+      type: daily
+    response_variable: forecast_response
+  - variables:
+      tomorrow: "{{ forecast_response[weather_entity]['forecast'][1] }}"
+  - action: input_number.set_value
+    target:
+      entity_id: !input precip_prob_entity
+    data:
+      value: "{{ (tomorrow.precipitation_probability | float(0)) | round(0) | int }}"
+  - action: input_number.set_value
+    target:
+      entity_id: !input precip_mm_entity
+    data:
+      value: "{{ (tomorrow.precipitation | float(0)) | round(1) }}"
+  - action: input_text.set_value
+    target:
+      entity_id: !input condition_entity
+    data:
+      value: "{{ tomorrow.condition | default('unknown') }}"
+
+mode: single

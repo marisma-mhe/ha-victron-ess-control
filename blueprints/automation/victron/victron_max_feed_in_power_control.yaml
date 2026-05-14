@@ -1,0 +1,428 @@
+#
+# ═══════════════════════════════════════════════════════════════════════════
+# Victron MaxFeedInPower Control — Blueprint
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# PURPOSE
+#   Controls the CGwacs/MaxFeedInPower setting on the Victron ESS via MQTT.
+#
+#   Principle: when grid voltage rises (overvoltage risk from too much feed-in),
+#   MaxFeedInPower is throttled step-by-step towards 0 W. At normal/low voltage
+#   the configured maximum is released.
+#
+# MQTT CONTROL
+#   Topic:   Settings/CGwacs/MaxFeedInPower (write path derived from system ID)
+#   Payload: {"max":1000000,"min":-1,"value":<W>}
+#
+#   The victron_daytime_feed_in_control blueprint reads MaxFeedInPower as a
+#   read-only ceiling (sensor.victron_ess_max_feed_in_power) — no conflict.
+#   This blueprint writes exclusively to MaxFeedInPower, never to AcPowerSetPoint.
+#
+# ───────────────────────────────────────────────────────────────────────────
+# PREREQUISITES (all provided by packages/victron_ess.yaml)
+# ───────────────────────────────────────────────────────────────────────────
+#
+#   sensor.victron_ess_grid_voltage  (Grid L1 voltage)
+#
+#   input_select.victron_max_feed_in_override   options: [Auto, Manuell, Unbegrenzt]
+#   input_number.victron_max_feed_in_power_manual
+#   input_number.victron_max_feed_in_volt_min
+#   input_number.victron_max_feed_in_volt_max
+#   input_number.victron_max_feed_in_steps
+#   input_number.victron_max_feed_in_curve_exponent
+#   input_number.victron_max_feed_in_dwell_seconds
+#   input_text.victron_max_feed_in_last_reason  (optional, decision log)
+#
+# ───────────────────────────────────────────────────────────────────────────
+# VOLTAGE TABLE (dynamically computed — default: 235–250 V, 10 steps)
+# ───────────────────────────────────────────────────────────────────────────
+#
+#   Step size = (volt_max − volt_min) / num_steps = (250 − 235) / 10 = 1.5 V
+#   Power = ceil((volt_max − v) / step_size) / num_steps × max_power
+#
+#   Grid L1 voltage (V)  │ MaxFeedInPower (W)   Share
+#   ─────────────────────┼──────────────────────────────
+#   ≥ 250 (volt_max)     │ 0                    0 %
+#   248.5 – 250          │ max / 10             10 %
+#   247.0 – 248.5        │ 2 × max / 10         20 %
+#   ...                  │ ...
+#   236.5 – 238.0        │ 9 × max / 10         90 %
+#   < 235 (volt_min)     │ max                  100 %
+#
+#   Configurable via:
+#     input_number.victron_max_feed_in_volt_min  (default 235 V)
+#     input_number.victron_max_feed_in_volt_max  (default 250 V)
+#     input_number.victron_max_feed_in_steps     (default 10)
+#
+# ───────────────────────────────────────────────────────────────────────────
+# MODES
+# ───────────────────────────────────────────────────────────────────────────
+#
+#   Auto       → Voltage-adaptive based on the table above
+#   Manuell    → Fixed value from input_number.victron_max_feed_in_power_manual
+#   Unbegrenzt → Writes manual_power_entity (no limit, for testing/maintenance only)
+#
+# ═══════════════════════════════════════════════════════════════════════════
+
+blueprint:
+  name: Victron MaxFeedInPower Control
+  description: >
+    Controls CGwacs/MaxFeedInPower on the Victron ESS via MQTT with voltage-adaptive
+    throttling.
+
+    When grid voltage rises (overvoltage risk), MaxFeedInPower is reduced step by step.
+    At normal/low voltage the configured maximum is released.
+
+    Modes: Auto (voltage-adaptive) / Manuell (fixed value) / Unbegrenzt (no limit).
+  domain: automation
+  source_url: https://github.com/marisma-mhe/ha-victron-ess-control/blob/main/blueprints/automation/victron/victron_max_feed_in_power_control.yaml
+
+  input:
+    # --- MQTT write path ---
+    mqtt_topic_entity:
+      name: Victron System ID (input_text, portal serial)
+      description: >
+        input_text containing the Victron portal serial / system ID.
+        The MQTT write topic for MaxFeedInPower is constructed from this value.
+        Default: input_text.victron_grid_system_id
+      selector: { entity: { filter: [ domain: input_text ] } }
+      default: input_text.victron_grid_system_id
+
+    # --- Voltage sensor ---
+    voltage_sensor:
+      name: Grid L1 voltage sensor (sensor, V)
+      description: >
+        Grid voltage phase 1. Used as trigger and for the voltage step table.
+        Default: sensor.victron_ess_grid_voltage
+      selector: { entity: { filter: [ domain: sensor ] } }
+      default: sensor.victron_ess_grid_voltage
+
+    # --- Override ---
+    override_select_entity:
+      name: Override mode (input_select)
+      description: "Auto / Manuell / Unbegrenzt"
+      selector: { entity: { filter: [ domain: input_select ] } }
+      default: input_select.victron_max_feed_in_override
+
+    manual_power_entity:
+      name: MaxFeedInPower maximum (input_number, W)
+      description: >
+        Serves two purposes simultaneously:
+        (1) Auto mode: upper limit of the lowest voltage band (< volt_min, normal voltage).
+        (2) Manuell mode: fixed output value independent of voltage.
+        Changes to input_number.victron_max_feed_in_power_manual take effect immediately.
+      selector: { entity: { filter: [ domain: input_number ] } }
+      default: input_number.victron_max_feed_in_power_manual
+
+    # --- Dynamic voltage thresholds ---
+    volt_min_entity:
+      name: Undervoltage threshold (input_number, V)
+      description: >
+        Below this voltage → full maximum power.
+        Default: input_number.victron_max_feed_in_volt_min (235 V)
+      selector: { entity: { filter: [ domain: input_number ] } }
+      default: input_number.victron_max_feed_in_volt_min
+
+    volt_max_entity:
+      name: Overvoltage threshold (input_number, V)
+      description: >
+        At or above this voltage → 0 W (feed-in blocked).
+        Default: input_number.victron_max_feed_in_volt_max (250 V)
+      selector: { entity: { filter: [ domain: input_number ] } }
+      default: input_number.victron_max_feed_in_volt_max
+
+    num_steps_entity:
+      name: Number of steps (input_number)
+      description: >
+        Number of equal power steps between volt_min and volt_max.
+        Default: input_number.victron_max_feed_in_steps (10)
+      selector: { entity: { filter: [ domain: input_number ] } }
+      default: input_number.victron_max_feed_in_steps
+
+    curve_exponent_entity:
+      name: Curve exponent (input_number)
+      description: >
+        Power-law exponent for the step curve. 1.0 = linear (default).
+        < 1.0 = early steps get more power (more aggressive throttling).
+        > 1.0 = late steps get more power (more conservative throttling).
+        Default: input_number.victron_max_feed_in_curve_exponent
+      selector: { entity: { filter: [ domain: input_number ] } }
+      default: input_number.victron_max_feed_in_curve_exponent
+
+    dwell_seconds_entity:
+      name: Dwell time before step change (input_number, s)
+      description: >
+        Seconds the voltage must remain stable in a step band before
+        MaxFeedInPower is written. 0 = immediate change (default).
+        Applies only in Auto mode, normal voltage band [volt_min, volt_max).
+        Overvoltage protection (v ≥ volt_max → 0 W) always acts immediately.
+        Default: input_number.victron_max_feed_in_dwell_seconds
+      selector: { entity: { filter: [ domain: input_number ] } }
+      default: input_number.victron_max_feed_in_dwell_seconds
+
+    # --- Feed-In Override (optional, for Block FeedIn → MaxFeedInPower = 0) ---
+    feed_in_override_entity:
+      name: (Optional) Feed-In Override (input_select)
+      description: >
+        When "Block FeedIn" is selected → MaxFeedInPower is immediately set to 0,
+        regardless of voltage and mode. Leave empty if not used.
+        Default: input_select.victron_feed_in_override
+      default: input_select.victron_feed_in_override
+      selector: { entity: { filter: [ domain: input_select ] } }
+
+    # --- MaxFeedInPower readback (optional, for dwell-skip after Block FeedIn) ---
+    max_feed_in_readback_entity:
+      name: (Optional) MaxFeedInPower readback (sensor, W)
+      description: >
+        Reads back the current MaxFeedInPower value from the Victron system.
+        Used to skip dwell when MaxFeedInPower = 0 but target > 0 — e.g. directly
+        after Block FeedIn is deactivated. Without this sensor, voltage triggers can
+        kill the override run (mode:restart) before the write step is reached,
+        leaving MaxFeedInPower stuck at 0.
+        Default: sensor.victron_ess_max_feed_in_power
+      default: sensor.victron_ess_max_feed_in_power
+      selector: { entity: { filter: [ domain: sensor ] } }
+
+    # --- Debug (optional) ---
+    last_reason_text:
+      name: (Optional) input_text for decision log
+      default: input_text.victron_max_feed_in_last_reason
+      selector: { entity: { filter: [ domain: input_text ] } }
+
+mode: restart
+
+# ---------- Variables: pass-through for trigger entity_id references ----------
+variables:
+  mqtt_topic_entity:              !input mqtt_topic_entity
+  voltage_sensor:                 !input voltage_sensor
+  override_select_entity:         !input override_select_entity
+  manual_power_entity:            !input manual_power_entity
+  feed_in_override_entity:        !input feed_in_override_entity
+  max_feed_in_readback_entity:    !input max_feed_in_readback_entity
+  last_reason_text:               !input last_reason_text
+  volt_min_entity:                !input volt_min_entity
+  volt_max_entity:                !input volt_max_entity
+  num_steps_entity:               !input num_steps_entity
+  curve_exponent_entity:          !input curve_exponent_entity
+  dwell_seconds_entity:           !input dwell_seconds_entity
+
+# ---------- Triggers ----------
+trigger:
+  # Voltage change → immediate re-evaluation
+  - platform: state
+    entity_id: !input voltage_sensor
+
+  # Override change (MaxFeedIn-specific override)
+  - platform: state
+    entity_id: !input override_select_entity
+
+  # Feed-In Override → react immediately when Block FeedIn is selected
+  - platform: state
+    entity_id: !input feed_in_override_entity
+
+  # Manual value changed
+  - platform: state
+    entity_id: !input manual_power_entity
+
+  # Threshold helpers changed
+  - platform: state
+    entity_id:
+      - !input volt_min_entity
+      - !input volt_max_entity
+      - !input num_steps_entity
+      - !input curve_exponent_entity
+      - !input dwell_seconds_entity
+
+  # Fallback every 5 minutes (HA restart, missed triggers)
+  - platform: time_pattern
+    minutes: "/5"
+
+condition: []
+
+action:
+  # -------- 1. Compute all decision variables --------
+  - variables:
+      topic:    "victron/W/{{ states(mqtt_topic_entity) }}/settings/0/Settings/CGwacs/MaxFeedInPower"
+      mode:     "{{ states(override_select_entity) }}"
+      voltage:  "{{ states(voltage_sensor) | float(0) }}"
+      voltage_ok: "{{ states(voltage_sensor) not in ['unknown', 'unavailable'] }}"
+      feed_in_blocked: "{{ feed_in_override_entity | length > 0 and is_state(feed_in_override_entity, 'Block FeedIn') }}"
+
+      # Current MaxFeedInPower readback (for dwell-skip detection)
+      current_max_feed_in_w: >-
+        {% if max_feed_in_readback_entity | length > 0
+              and states(max_feed_in_readback_entity) not in ['unknown', 'unavailable'] %}
+          {{ states(max_feed_in_readback_entity) | int(0) }}
+        {% else %}
+          -1
+        {% endif %}
+
+      # Maximum from helper — serves as (1) upper limit when < volt_min and (2) fixed Manuell value.
+      manual_power: "{{ states(manual_power_entity) | int(5000) }}"
+
+      # Dynamic thresholds from helpers
+      volt_min:  "{{ states(volt_min_entity)  | float(235) }}"
+      volt_max:  "{{ states(volt_max_entity)  | float(250) }}"
+      num_steps: "{{ states(num_steps_entity) | int(10) }}"
+      step_size: "{{ (volt_max - volt_min) / num_steps }}"
+      curve_exp:    "{{ states(curve_exponent_entity) | float(1.0) }}"
+      dwell_seconds: "{{ states(dwell_seconds_entity) | int(0) }}"
+
+      # Dynamic step table: ceil division gives step (0 = blocked, num_steps = full)
+      step_power: >-
+        {% set v = voltage %}
+        {% if v >= volt_max %}
+          0
+        {% else %}
+          {% set s = [((volt_max - v) / step_size) | round(0, 'ceil') | int, num_steps] | min %}
+          {{ ((s / num_steps) ** curve_exp * manual_power) | int }}
+        {% endif %}
+
+      # Effective target value depending on mode
+      target_power: >-
+        {% if mode == 'Manuell' %}      {{ manual_power }}
+        {% elif mode == 'Unbegrenzt' %} {{ manual_power }}
+        {% else %}                      {{ step_power }}
+        {% endif %}
+
+      # Voltage band for decision log
+      active_band: >-
+        {% set v = voltage %}
+        {% if v >= volt_max %}
+          ≥ {{ volt_max }} V → 0 W (overvoltage)
+        {% elif v < volt_min %}
+          < {{ volt_min }} V → {{ manual_power }} W (normal)
+        {% else %}
+          {% set s = [((volt_max - v) / step_size) | round(0, 'ceil') | int, num_steps] | min %}
+          {% set lower = (volt_max - s * step_size) | round(1) %}
+          {% set upper = (volt_max - (s - 1) * step_size) | round(1) %}
+          {{ lower }}–{{ upper }} V → {{ ((s / num_steps) ** curve_exp * manual_power) | int }} W (step {{ s }}/{{ num_steps }})
+        {% endif %}
+
+      decision_text: >-
+        {% if not topic or topic in ['unknown', 'unavailable'] %}
+        ⚠️ MQTT topic not configured — not writing
+        {% elif not voltage_ok %}
+        ⚠️ Voltage sensor unavailable ({{ states(voltage_sensor) }}) — not writing
+        {% elif mode == 'Manuell' %}
+        {% if voltage >= volt_max %}🚨 Manuell + OVERVOLTAGE: {{ voltage | round(1) }} V ≥ {{ volt_max }} V → emergency 0 W (overrides Manuell={{ manual_power }} W)
+        {% else %}🔧 Manuell: MaxFeedInPower = {{ manual_power }} W
+        — voltage: {{ voltage | round(1) }} V · auto would be: {{ step_power }} W{% endif %}
+        {% elif mode == 'Unbegrenzt' %}
+        {% if voltage >= volt_max %}🚨 Unbegrenzt + OVERVOLTAGE: {{ voltage | round(1) }} V ≥ {{ volt_max }} V → emergency 0 W (overrides Unbegrenzt={{ manual_power }} W)
+        {% else %}♾ Unbegrenzt: MaxFeedInPower = {{ manual_power }} W
+        — voltage: {{ voltage | round(1) }} V · auto would be: {{ step_power }} W{% endif %}
+        {% else %}
+        ✅ Auto: {{ active_band }}
+        — voltage: {{ voltage | round(1) }} V · MaxFeedInPower → {{ step_power }} W
+        {% endif %}
+
+  # -------- 2. Write decision log (optional) --------
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ last_reason_text | length > 0 }}"
+        sequence:
+          - action: input_text.set_value
+            target: { entity_id: !input last_reason_text }
+            data:
+              value: >-
+                [{{ now().strftime('%Y-%m-%d %H:%M') }}] {{ decision_text }}
+
+  # -------- 3. Abort if MQTT topic missing --------
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ not topic or topic in ['unknown', 'unavailable'] }}"
+        sequence:
+          - stop: "MQTT topic not configured"
+
+  # -------- 4. Abort if voltage sensor unavailable --------
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ not voltage_ok }}"
+        sequence:
+          - stop: "Voltage sensor unavailable"
+
+    default:
+      # -------- 5a. Block FeedIn → MaxFeedInPower immediately 0 (all modes, no dwell) --------
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ feed_in_blocked }}"
+            sequence:
+              - action: mqtt.publish
+                data:
+                  topic: "{{ topic }}"
+                  qos: 2
+                  payload: '{"max":1000000,"min":-1,"value":0}'
+              - choose:
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ last_reason_text | length > 0 }}"
+                    sequence:
+                      - action: input_text.set_value
+                        target: { entity_id: !input last_reason_text }
+                        data:
+                          value: >-
+                            [{{ now().strftime('%Y-%m-%d %H:%M') }}] 🚫 Block FeedIn active → MaxFeedInPower = 0 W
+              - stop: "Block FeedIn: MaxFeedInPower set to 0"
+
+      # -------- 5b. EMERGENCY SHUTDOWN: overvoltage → immediately 0, all modes, no dwell --------
+      #   Explicit path — independent of target_power/mode calculation.
+      #   Also fires in Manuell/Unbegrenzt (target_power would write manual_power there).
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ voltage >= volt_max }}"
+            sequence:
+              - action: mqtt.publish
+                data:
+                  topic: "{{ topic }}"
+                  qos: 2
+                  payload: '{"max":1000000,"min":-1,"value":0}'
+              - choose:
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ last_reason_text | length > 0 }}"
+                    sequence:
+                      - action: input_text.set_value
+                        target: { entity_id: !input last_reason_text }
+                        data:
+                          value: >-
+                            [{{ now().strftime('%Y-%m-%d %H:%M') }}] 🚨 EMERGENCY: {{ voltage | round(1) }} V ≥ {{ volt_max }} V → MaxFeedInPower = 0 W (mode: {{ mode }})
+              - stop: "Overvoltage: MaxFeedInPower set to 0 immediately"
+
+      # -------- 6. Dwell: Auto mode only, with three exceptions --------
+      #   Exception 1 (trigger.entity_id): override transition directly detected →
+      #     no dwell when the override trigger started the run.
+      #   Exception 2 (current_max_feed_in_w == 0): MaxFeedInPower currently 0 but
+      #     target > 0 → write immediately regardless of which trigger started the run.
+      #     Guards against mode:restart race: voltage trigger kills the override run
+      #     before step 7, restarts with trigger.entity_id = voltage_sensor — without
+      #     this check dwell fires and MaxFeedInPower stays stuck at 0.
+      #   Exception 3 (Force FeedIn): with active Force FeedIn, maximum export drives
+      #     grid voltage continuously high → frequent voltage triggers restart dwell
+      #     constantly → MaxFeedInPower stays at maximum, voltage protection never fires.
+      #     Force FeedIn should export aggressively; voltage throttling must react immediately.
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ mode == 'Auto' and dwell_seconds > 0
+                     and trigger.entity_id | default('') != feed_in_override_entity
+                     and not (current_max_feed_in_w == 0 and target_power > 0)
+                     and not (feed_in_override_entity | length > 0
+                              and is_state(feed_in_override_entity, 'Force FeedIn')) }}
+            sequence:
+              - delay:
+                  seconds: "{{ dwell_seconds }}"
+
+      # -------- 7. Set MaxFeedInPower via MQTT --------
+      - action: mqtt.publish
+        data:
+          topic: "{{ topic }}"
+          qos: 2
+          payload: >-
+            {"max":1000000,"min":-1,"value":{{ target_power | int }}}
