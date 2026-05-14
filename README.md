@@ -1,8 +1,6 @@
 # ha-victron-ess-control
 
-Custom integration for Victron Energy ESS systems in Home Assistant. Provides guided setup (config flow), the helper/sensor package, and 9 automation blueprints — all deployed automatically on install.
-
-> **Dashboard views** are in the companion repo **[ha-victron-ess-frontend](https://github.com/marisma-mhe/ha-victron-ess-frontend)** — copy the YAML panels into your Lovelace dashboards after setup.
+Custom integration for Victron Energy ESS systems in Home Assistant. Provides guided setup (config flow), the helper/sensor package, 9 automation blueprints, and 5 Lovelace dashboard views — all deployed automatically on install.
 
 ## Background
 
@@ -40,6 +38,7 @@ This setup and logic is generalised in the blueprints so it works for any Victro
 - **Guided setup wizard** — config flow collects serials, battery capacity; deploys the package with values filled in
 - **Helper + sensor package** (`packages/victron_ess.yaml`) — all `input_*` helpers, canonical `sensor.victron_ess_*` template sensors, utility meters
 - **9 automation blueprints** — deployed automatically to `blueprints/automation/victron/` on setup
+- **5 Lovelace dashboard views** — deployed automatically to `dashboards/victron/` on setup
 - **Manual installation path** — package file can be used standalone without the integration
 
 ## Requirements
@@ -121,7 +120,38 @@ Settings → Automations → Blueprints — create one instance per blueprint (s
 
 #### A6. Add dashboard views (optional)
 
-See **[ha-victron-ess-frontend](https://github.com/marisma-mhe/ha-victron-ess-frontend)** for Lovelace YAML panels.
+Dashboard YAML files are deployed to `dashboards/victron/` in your HA config directory. Wire them up in `configuration.yaml`:
+
+```yaml
+lovelace:
+  dashboards:
+    victron-feed-in:
+      mode: yaml
+      filename: dashboards/victron/feed_in_control_center.yaml
+      title: Feed-In Control
+      icon: mdi:solar-power
+      show_in_sidebar: true
+    victron-overnight:
+      mode: yaml
+      filename: dashboards/victron/overnight_charging_control_center.yaml
+      title: Overnight Charging
+      icon: mdi:battery-charging
+      show_in_sidebar: true
+    victron-storm:
+      mode: yaml
+      filename: dashboards/victron/storm_mode_control_center.yaml
+      title: Storm Mode
+      icon: mdi:weather-lightning
+      show_in_sidebar: true
+    victron-overview:
+      mode: yaml
+      filename: dashboards/victron/victron_overview_values.yaml
+      title: Victron Overview
+      icon: mdi:solar-panel
+      show_in_sidebar: true
+```
+
+Restart HA after adding these entries.
 
 ---
 
@@ -181,7 +211,7 @@ Go to HA → Settings → Automations → Blueprints and create one instance of 
 
 #### 7. Add dashboard views (optional)
 
-See **[ha-victron-ess-frontend](https://github.com/marisma-mhe/ha-victron-ess-frontend)** for Lovelace YAML panels.
+Copy `custom_components/victron_ess_control/dashboards/*.yaml` to `dashboards/victron/` in your HA config directory, then wire them up as shown in [step A6](#a6-add-dashboard-views-optional) above.
 
 ## Blueprints
 

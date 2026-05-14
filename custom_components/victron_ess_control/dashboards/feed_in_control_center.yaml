@@ -1,0 +1,396 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Victron Feed-In Control Center — Lovelace View (combined)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Uses native HA cards only (no HACS required): glance, tile, entities, markdown
+#
+# HOW TO INCLUDE IN AN EXISTING DASHBOARD
+#   1. Open dashboard → pencil icon → ⋮ menu → "Raw configuration editor"
+#   2. Under "views:" add as a new entry:
+#        views:
+#          - title: Feed-In Control Center    ← paste the contents of this file here
+#   3. Save
+#
+# ───────────────────────────────────────────────────────────────────────────
+# SECTIONS & CARDS
+# ───────────────────────────────────────────────────────────────────────────
+#
+#  1. LIVE STATUS (glance + 2× markdown)
+#     All relevant real-time measurements:
+#     • Solar (W), load 1f/3f, battery SOC, battery power, grid (W)
+#     • Grid voltage (V) — trigger of MaxFeedInPower control
+#     • MaxFeedIn current (W) — readback from Victron
+#     • Active voltage band (markdown — computed as in blueprint)
+#     • Time to 100% (markdown)
+#
+#  2. MAXFEEDIN CONTROL (tile + markdown)
+#     • input_select.victron_max_feed_in_override (Auto / Manuell / Unbegrenzt)
+#     • input_number.victron_max_feed_in_power_manual
+#     • Voltage table (static reference with live readback)
+#
+#  3. FEED-IN SETTINGS (tile + entities)
+#     • Feed-in override, min SOC, min solar remaining,
+#       min surplus, min battery charge, daytime charge target
+#     • Morning priority toggle, forecast buffer
+#     • Day window start/end
+#
+#  4. TODAY'S FORECAST (glance + 2× markdown)
+#     • Solar remaining, consumption remaining
+#     • Gate status 3–6 (computed as in blueprint)
+#     • Time to daytime charge target
+#
+#  5. LAST DECISION (2× markdown)
+#     • MaxFeedIn log (input_text.victron_max_feed_in_last_reason)
+#     • Feed-In log (input_text.victron_feed_in_last_reason)
+#
+#
+# ───────────────────────────────────────────────────────────────────────────
+# GATE OVERVIEW (auto mode, order as in blueprint)
+# ───────────────────────────────────────────────────────────────────────────
+#   MaxFeedIn  Voltage table   Grid Voltage → MaxFeedInPower (0–5000 W)
+#   Gate 1     Time window     victron_day_start … victron_day_end
+#   Gate 2     Grid protection victron_ess_grid_power > 100 W → skip write
+#   Bypass     Battery full    SOC ≥ 99% → export directly (skip gates 3–5)
+#   Gate 3     Min SOC         SOC ≥ victron_feed_in_min_soc
+#   Gate 4     Min solar rest  solcast_remaining ≥ victron_feed_in_min_solar_remaining
+#   Gate 5     Forecast surplus surplus_kwh > 0
+#   Gate 6     Min surplus     real_surplus_w ≥ victron_feed_in_min_surplus_w
+#   Morning P. Morning Priority in_morning AND mp_enabled AND surplus_kwh ≥ buffer → min_charge_reserve = floor
+#   Ceiling    MaxFeedInPower  export_w = min(real_surplus_w, MaxFeedInPower)
+#              → AcPowerSetPoint = −export_w
+#
+# ═══════════════════════════════════════════════════════════════════════════
+
+title: Feed-In Control Center
+icon: mdi:transmission-tower-export
+type: sections
+max_columns: 2
+
+sections:
+
+  # ── 1. Live Status ────────────────────────────────────────────────────────
+  - type: grid
+    title: Live Status
+    cards:
+
+      - type: glance
+        show_name: true
+        show_icon: true
+        show_state: true
+        columns: 3
+        entities:
+          - entity: sensor.victron_ess_solar_power
+            name: Solar
+            icon: mdi:solar-power-variant
+          - entity: sensor.victron_ess_grid_system_load
+            name: Consumption Grid
+            icon: mdi:home-lightning-bolt
+          - entity: sensor.victron_ess_consumer_system_load
+            name: Consumption Home
+            icon: mdi:home-lightning-bolt-outline
+          - entity: sensor.victron_ess_battery_soc
+            name: Battery SOC
+            icon: mdi:battery
+          - entity: sensor.victron_ess_battery_power
+            name: Battery power
+            icon: mdi:battery-charging
+          - entity: sensor.victron_grid_export_power
+            name: Feed-in
+            icon: mdi:transmission-tower-export
+          - entity: sensor.victron_grid_import_power
+            name: Grid import
+            icon: mdi:transmission-tower-import
+          - entity: sensor.victron_ess_grid_voltage
+            name: Grid Voltage
+            icon: mdi:sine-wave
+          - entity: sensor.victron_ess_expected_max_feed_in_power
+            name: MaxFeedIn (target)
+            icon: mdi:arrow-up-circle-outline
+          - entity: sensor.victron_feed_in_today
+            name: Feed-in today
+            icon: mdi:transmission-tower-export
+
+      # Active voltage band + MaxFeedIn override status
+      - type: markdown
+        content: >
+          {% set v = states('sensor.victron_ess_grid_voltage') | float(0) %}
+          {% set mode = states('input_select.victron_max_feed_in_override') %}
+          {% set max_p = states('input_number.victron_max_feed_in_power_manual') | int(5000) %}
+          {% set v_min = states('input_number.victron_max_feed_in_volt_min') | float(235) %}
+          {% set v_max = states('input_number.victron_max_feed_in_volt_max') | float(250) %}
+          {% set n = states('input_number.victron_max_feed_in_steps') | int(10) %}
+          {% set exp = states('input_number.victron_max_feed_in_curve_exponent') | float(1.0) %}
+          {% set step_v = (v_max - v_min) / n %}
+          {% set ns = namespace(soll=max_p, lower=0.0, upper=0.0, pct=0, s=0) %}
+          {% if mode not in ['Manuell', 'Unbegrenzt'] %}
+            {% if v >= v_max %}{% set ns.soll = 0 %}
+            {% elif v >= v_min %}
+              {% set ns.s = [((v_max - v) / step_v) | round(0, 'ceil') | int, n] | min %}
+              {% set ns.soll = ((ns.s / n) ** exp * max_p) | int %}
+              {% set ns.lower = (v_max - ns.s * step_v) | round(1) %}
+              {% set ns.upper = (v_max - (ns.s - 1) * step_v) | round(1) %}
+              {% set ns.pct = ((ns.s / n) ** exp * 100) | int %}
+            {% endif %}
+          {% endif %}
+          {% set ist = states('sensor.victron_ess_max_feed_in_power') | int(-1) %}
+          {% set soll_sensor = states('sensor.victron_ess_expected_max_feed_in_power') | int(-1) %}
+          {% set dwell = states('input_number.victron_max_feed_in_dwell_seconds') | int(0) %}
+          **MaxFeedIn:**
+          {% if mode == 'Manuell' %}
+          🔧 Manual: {{ ns.soll }} W (voltage: {{ v | round(1) }} V)
+          {% elif mode == 'Unbegrenzt' %}
+          ♾ Unlimited: {{ ns.soll }} W (voltage: {{ v | round(1) }} V)
+          {% elif v >= v_max %}
+          🔴 Overvoltage ≥ {{ v_max }} V → blocked (0 W)
+          {% elif v < v_min %}
+          🟢 {{ v | round(1) }} V (< {{ v_min }} V) → {{ ns.soll }} W (normal voltage)
+          {% else %}
+          {% if ns.pct <= 20 %}🟠{% elif ns.pct <= 50 %}🟡{% else %}🟢{% endif %} {{ v | round(1) }} V ({{ ns.lower }}–{{ ns.upper }} V) → {{ ns.soll }} W ({{ ns.pct }}%)
+          {% endif %}
+
+          Victron readback: {% if ist < 0 or soll_sensor < 0 %}unknown{% elif (soll_sensor - ist) | abs <= 50 %}✅ {{ ist }} W (confirmed){% elif dwell > 0 and mode == 'Auto' and v >= v_min and v < v_max %}⏱ {{ ist }} W → {{ soll_sensor }} W (dwell {{ dwell }}s){% else %}⏳ {{ ist }} W (change pending…){% endif %} · Feed-in override: {{ states('input_select.victron_feed_in_override') }}
+
+      # Time to 100%
+      - type: markdown
+        content: >
+          {% set soc = states('sensor.victron_ess_battery_soc') | float(0) %}
+          {% set cap = states('input_number.battery_capacity_kwh') | float(96) %}
+          {% set eff = states('input_number.charge_efficiency') | float(0.95) %}
+          {% set charge_w = [states('sensor.victron_ess_battery_power') | float(0), 0] | max %}
+          {% set need_kwh = ([((100 - soc) * cap / 100) / eff, 0] | max) | round(2) %}
+          🔋 **Time to 100%:**
+          {% if soc >= 100 %}
+          ✅ Full
+          {% elif charge_w < 10 %}
+          ⏸ not charging ({{ need_kwh }} kWh remaining)
+          {% else %}
+          {% set h = (need_kwh / (charge_w / 1000)) | int %}
+          {% set m = (((need_kwh / (charge_w / 1000)) - h) * 60) | round(0) | int %}
+          **{{ h }}h {{ m }}min** @ {{ charge_w | round(0) }} W — {{ need_kwh }} kWh remaining (SOC {{ soc | round(0) }}%)
+          {% endif %}
+
+  # ── 2. MaxFeedIn Control ──────────────────────────────────────────────────
+  - type: grid
+    title: MaxFeedIn Control
+    cards:
+
+      - type: tile
+        entity: input_select.victron_max_feed_in_override
+        name: MaxFeedIn Override
+        icon: mdi:cog-transfer
+
+      - type: tile
+        entity: input_number.victron_max_feed_in_power_manual
+        name: Manual value (W)
+        icon: mdi:flash
+
+      - type: tile
+        entity: input_number.victron_max_feed_in_volt_min
+        name: Undervoltage threshold (V)
+        icon: mdi:sine-wave
+
+      - type: tile
+        entity: input_number.victron_max_feed_in_volt_max
+        name: Overvoltage threshold (V)
+        icon: mdi:alert-circle-outline
+
+      - type: tile
+        entity: input_number.victron_max_feed_in_steps
+        name: Number of steps
+        icon: mdi:stairs
+
+      - type: tile
+        entity: input_number.victron_max_feed_in_curve_exponent
+        name: Curve exponent
+        icon: mdi:chart-bell-curve
+
+      - type: tile
+        entity: input_number.victron_max_feed_in_dwell_seconds
+        name: Dwell time before step change
+        icon: mdi:timer-outline
+
+      - type: markdown
+        content: |
+          {% set v_min = states('input_number.victron_max_feed_in_volt_min') | float(235) %}
+          {% set v_max = states('input_number.victron_max_feed_in_volt_max') | float(250) %}
+          {% set n = states('input_number.victron_max_feed_in_steps') | int(10) %}
+          {% set max_p = states('input_number.victron_max_feed_in_power_manual') | int(5000) %}
+          {% set exp = states('input_number.victron_max_feed_in_curve_exponent') | float(1.0) %}
+          {% set step_v = (v_max - v_min) / n %}
+          | Grid (V)    | MaxFeedInPower (W) | Status |
+          |:-----------:|:-----------------:|:-------|
+          | ≥ {{ v_max }} | 0 | 🔴 Blocked |
+          {% for s in range(1, n) %}{% set lower = (v_max - s * step_v) | round(1) %}{% set upper = (v_max - (s - 1) * step_v) | round(1) %}{% set pct = ((s / n) ** exp * 100) | int %}| {{ lower }}–{{ upper }} | {{ ((s / n) ** exp * max_p) | int }} | {% if pct <= 20 %}🟠 Heavily throttled{% elif pct <= 50 %}🟡 Reduced{% else %}🟢 Normal{% endif %} |
+          {% endfor %}| < {{ v_min }} | {{ max_p }} | 🟢 Maximum |
+
+          Maximum: **{{ max_p }} W** · Steps: **{{ n }}** · Exponent: **{{ exp }}** · Step size: **{{ step_v | round(2) }} V** · Current voltage: **{{ states('sensor.victron_ess_grid_voltage') | float(0) | round(1) }} V**
+
+  # ── 3. Feed-In Settings ───────────────────────────────────────────────────
+  - type: grid
+    title: Feed-In Settings
+    cards:
+
+      - type: tile
+        entity: input_select.victron_feed_in_override
+        name: Feed-in override
+        icon: mdi:tune
+
+      - type: tile
+        entity: input_number.victron_feed_in_min_soc
+        name: Minimum SOC for feed-in
+        icon: mdi:battery-arrow-up
+
+      - type: tile
+        entity: input_number.victron_feed_in_min_solar_remaining
+        name: Minimum solar remaining for feed-in
+        icon: mdi:sun-clock
+
+      - type: tile
+        entity: input_number.victron_feed_in_min_surplus_w
+        name: Minimum surplus for feed-in
+        icon: mdi:lightning-bolt-circle
+
+      - type: tile
+        entity: input_number.victron_feed_in_min_charge_w
+        name: Minimum battery charge
+        icon: mdi:battery-charging-low
+
+      - type: tile
+        entity: input_number.victron_feed_in_day_charge_target_soc
+        name: Daytime charge target
+        icon: mdi:battery-arrow-up-outline
+
+      - type: tile
+        entity: input_boolean.victron_feed_in_morning_priority
+        name: Morning priority feed-in
+        icon: mdi:weather-sunny-alert
+
+      - type: tile
+        entity: input_number.victron_feed_in_morning_surplus_buffer_kwh
+        name: Morning priority forecast buffer
+        icon: mdi:shield-sun
+
+      - type: entities
+        title: Day window
+        entities:
+          - entity: input_datetime.victron_day_start
+            name: Start
+            icon: mdi:weather-sunset-up
+          - entity: input_datetime.victron_day_end
+            name: End
+            icon: mdi:weather-sunset-down
+
+  # ── 4. Today's Forecast ───────────────────────────────────────────────────
+  - type: grid
+    title: Today's Forecast
+    cards:
+
+      - type: glance
+        show_name: true
+        show_icon: true
+        show_state: true
+        columns: 2
+        entities:
+          - entity: sensor.solcast_weighted_remaining_today_kwh
+            name: Solar remaining
+            icon: mdi:sun-clock
+          - entity: sensor.predicted_remaining_consumption_kwh
+            name: Consumption remaining
+            icon: mdi:home-clock
+
+      - type: markdown
+        content: |
+          {%- set sol = states('sensor.solcast_weighted_remaining_today_kwh') | float(0) -%}
+          {%- set load = states('sensor.predicted_remaining_consumption_kwh') | float(0) -%}
+          {%- set soc = states('sensor.victron_ess_battery_soc') | float(0) -%}
+          {%- set min_soc = states('input_number.victron_feed_in_min_soc') | float(80) -%}
+          {%- set cap = states('input_number.battery_capacity_kwh') | float(96) -%}
+          {%- set eff = states('input_number.charge_efficiency') | float(0.95) -%}
+          {%- set batt_need = ([((min_soc - soc) * cap / 100) / eff, 0] | max) | round(2) -%}
+          {%- set surplus = (sol - load - batt_need) | round(2) -%}
+          {%- set bypass = soc >= 99 -%}
+          {% if bypass %}⚡ **BYPASS ACTIVE — battery full ({{ soc | round(0) }}%)** · Gates 3–5 bypassed · feed-in runs directly<br>
+          {% endif %}
+          **Gate 5 – Forecast surplus:** {{ surplus }} kWh<br>
+          {% if bypass %}~~❌ Solar reserved for self-consumption/charging~~ *(bypassed)*{% elif surplus > 0 %}✅ Feed-in possible{% else %}❌ Solar reserved for self-consumption/charging{% endif %}
+
+          **Gate 3 – SOC gate:** {{ soc | round(0) }}% / {{ min_soc | round(0) }}% minimum<br>
+          {% if bypass %}~~⏳ Min SOC check~~ *(bypassed)*{% elif soc >= min_soc %}✅ OK{% else %}⏳ missing {{ (min_soc - soc) | round(1) }}%{% endif %}
+
+          **Gate 4 – Solar remaining gate:** {{ sol | round(2) }} kWh / {{ states('input_number.victron_feed_in_min_solar_remaining') | float(5) | round(1) }} kWh minimum<br>
+          {% if bypass %}~~❌ Min solar remaining check~~ *(bypassed)*{% elif sol >= states('input_number.victron_feed_in_min_solar_remaining') | float(5) %}✅ OK{% else %}❌ insufficient solar remaining{% endif %}
+
+          **Battery need (Gate 3 basis):** {{ batt_need }} kWh<br>
+          {%- set solar_now = states('sensor.victron_ess_solar_power') | float(0) -%}
+          {%- set load_now = states('sensor.victron_ess_consumer_system_load') | float(0) -%}
+          {%- set target = states('input_number.victron_feed_in_day_charge_target_soc') | float(100) -%}
+          {%- set hours_left = [(today_at(states('input_datetime.victron_day_end')) - now()).total_seconds() / 3600, 0.1] | max -%}
+          {%- set batt_need_full_kwh = ([((target - soc) * cap / 100) / eff, 0] | max) -%}
+          {%- set forecast_charge_w = (batt_need_full_kwh * 1000 / hours_left) | int -%}
+          {%- set min_charge_floor_w = states('input_number.victron_feed_in_min_charge_w') | int(500) -%}
+          {%- set mp_enabled = is_state('input_boolean.victron_feed_in_morning_priority', 'on') -%}
+          {%- set mp_buffer = states('input_number.victron_feed_in_morning_surplus_buffer_kwh') | float(2) -%}
+          {%- set s_win = today_at(states('input_datetime.victron_day_start')) -%}
+          {%- set e_win = today_at(states('input_datetime.victron_day_end')) -%}
+          {%- set mid = s_win + (e_win - s_win) / 2 -%}
+          {%- set in_morning = now() < mid -%}
+          {%- set fc_surplus = (states('sensor.solcast_weighted_remaining_today_kwh') | float(0)
+                               - states('sensor.predicted_remaining_consumption_kwh') | float(0)
+                               - batt_need_full_kwh) -%}
+          {%- set mp_active = mp_enabled and in_morning and fc_surplus >= mp_buffer -%}
+          {%- set min_charge_reserve_w = 0 if bypass else (min_charge_floor_w if mp_active else ([forecast_charge_w, min_charge_floor_w] | max)) -%}
+          {%- set exportable_surplus_w = [solar_now - load_now - min_charge_reserve_w, 0] | max | int -%}
+          {%- set min_surplus = states('input_number.victron_feed_in_min_surplus_w') | int(500) %}
+
+          **Gate 6 – Exportable surplus:** {{ exportable_surplus_w }} W / {{ min_surplus }} W minimum<br>
+          {% if bypass %}~~Gate 6 bypassed~~ *(bypassed)*{% elif exportable_surplus_w >= min_surplus %}✅ OK{% else %}❌ too low — missing {{ (min_surplus - exportable_surplus_w) }} W{% endif %}
+
+          solar: {{ solar_now | round(0) }} W · load: {{ load_now | round(0) }} W · charge reserve: {{ min_charge_reserve_w }} W
+
+          {% if mp_active %}☀️ Morning Priority active (buffer: {{ fc_surplus | round(1) }} kWh ≥ {{ mp_buffer }} kWh){% elif mp_enabled and not in_morning %}☀️ Morning Priority inactive — past midday{% elif mp_enabled %}☀️ Morning Priority inactive — forecast buffer insufficient ({{ fc_surplus | round(1) }} kWh / {{ mp_buffer }} kWh){% endif %}
+
+      - type: markdown
+        content: >
+          {% set soc = states('sensor.victron_ess_battery_soc') | float(0) %}
+          {% set target = states('input_number.victron_feed_in_day_charge_target_soc') | float(100) %}
+          {% set cap = states('input_number.battery_capacity_kwh') | float(96) %}
+          {% set eff = states('input_number.charge_efficiency') | float(0.95) %}
+          {% set batt_need_kwh = ([((target - soc) * cap / 100) / eff, 0] | max) | round(2) %}
+          {% set charge_w = [states('sensor.victron_ess_battery_power') | float(0), 0] | max %}
+          **Time to {{ target | round(0) }}%:**
+          {% if batt_need_kwh <= 0 %}
+          ✅ Target reached ({{ soc | round(0) }}%)
+          {% elif charge_w < 10 %}
+          ⏸ not charging — {{ batt_need_kwh }} kWh remaining
+          {% else %}
+          {% set hours = batt_need_kwh / (charge_w / 1000) %}
+          {% set h = hours | int %}
+          {% set m = ((hours - h) * 60) | round(0) | int %}
+          {{ h }}h {{ m }}min ({{ charge_w | round(0) }} W · {{ batt_need_kwh }} kWh remaining)
+          {% endif %}
+
+  # ── 5. Last Decision ──────────────────────────────────────────────────────
+  - type: grid
+    title: Last Decision
+    columns: 1
+    cards:
+
+      - type: markdown
+        title: MaxFeedIn
+        content: >
+          {% set reason = states('input_text.victron_max_feed_in_last_reason') %}
+          {% if reason in ['unknown', 'unavailable', ''] %}
+          *No decision stored yet.*
+          {% else %}
+          {{ reason }}
+          {% endif %}
+
+      - type: markdown
+        title: Feed-In (AcPowerSetPoint)
+        content: >
+          {% set s = states('input_text.victron_feed_in_last_reason') %}
+          {% if s in ['unknown', 'unavailable', ''] %}
+          *No decision recorded yet.*
+          {% else %}
+          {{ s }}
+          {% endif %}

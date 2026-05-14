@@ -1,0 +1,209 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Victron MaxFeedInPower Control Center — Lovelace View
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Uses Mushroom Cards (HACS: mushroom)
+#
+# HOW TO INCLUDE IN AN EXISTING DASHBOARD
+#   1. Open dashboard → pencil icon → ⋮ menu → "Raw configuration editor"
+#   2. Under "views:" add as a new entry:
+#        views:
+#          - title: MaxFeedIn Control    ← paste the contents of this file here
+#   3. Save
+#
+# ───────────────────────────────────────────────────────────────────────────
+# SECTIONS & CARDS
+# ───────────────────────────────────────────────────────────────────────────
+#
+#  1. LIVE STATUS (chips + template card)
+#     • Grid voltage (V) — primary trigger of the control logic
+#     • MaxFeedInPower readback (W) — from Victron (sensor.victron_ess_max_feed_in_power)
+#     • Active voltage band (computed)
+#     • Battery SOC (%), solar now (W), grid power (W)
+#
+#  2. CONTROL / OVERRIDE (select + number)
+#     • input_select.victron_max_feed_in_override (Auto / Manuell / Unbegrenzt)
+#     • input_number.victron_max_feed_in_power_manual (relevant in Manuell mode only)
+#
+#  3. LAST DECISION (markdown)
+#     • input_text.victron_max_feed_in_last_reason
+#
+#  4. VOLTAGE TABLE (markdown — static reference)
+#     Shows the 10 voltage bands and their MaxFeedInPower limits
+#     (matches the blueprint defaults from the original Node-RED flow).
+#
+#  5. VICTRON CONFIGURATION (entities)
+#     • input_text.victron_grid_system_id
+#
+# ═══════════════════════════════════════════════════════════════════════════
+
+title: MaxFeedIn Control
+icon: mdi:transmission-tower-export
+type: sections
+max_columns: 2
+
+sections:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 1. LIVE STATUS
+  # ─────────────────────────────────────────────────────────────────────────
+  - type: grid
+    cards:
+      - type: heading
+        heading: Live Status
+
+      - type: custom:mushroom-chips-card
+        chips:
+          # Grid voltage
+          - type: entity
+            entity: sensor.victron_ess_grid_voltage
+            icon: mdi:sine-wave
+            icon_color: >
+              {% set v = states('sensor.victron_ess_grid_voltage') | float(0) %}
+              {{ 'red' if v >= 250 else ('orange' if v >= 246 else ('amber' if v >= 242 else ('green' if v >= 235 else 'blue'))) }}
+          # MaxFeedInPower readback
+          - type: entity
+            entity: sensor.victron_ess_max_feed_in_power
+            icon: mdi:transmission-tower-export
+            icon_color: >
+              {% set p = states('sensor.victron_ess_max_feed_in_power') | int(0) %}
+              {{ 'red' if p == 0 else ('orange' if p <= 2000 else ('amber' if p <= 3500 else 'green')) }}
+          # Battery SOC
+          - type: entity
+            entity: sensor.victron_ess_battery_soc
+            icon: mdi:battery
+            icon_color: >
+              {% set soc = states('sensor.victron_ess_battery_soc') | float(0) %}
+              {{ 'green' if soc >= 80 else ('amber' if soc >= 40 else 'red') }}
+          # Solar
+          - type: entity
+            entity: sensor.victron_ess_solar_power
+            icon: mdi:solar-power-variant
+            icon_color: >
+              {{ 'amber' if states('sensor.victron_ess_solar_power') | float(0) > 100 else 'grey' }}
+          # Grid
+          - type: entity
+            entity: sensor.victron_ess_grid_power
+            icon: mdi:transmission-tower
+            icon_color: >
+              {% set g = states('sensor.victron_ess_grid_power') | float(0) %}
+              {{ 'red' if g > 100 else ('green' if g < -100 else 'grey') }}
+
+      # Status card: active voltage band + override
+      - type: custom:mushroom-template-card
+        primary: >
+          {% set v = states('sensor.victron_ess_grid_voltage') | float(0) %}
+          {% set mode = states('input_select.victron_max_feed_in_override') %}
+          {% if mode == 'Manuell' %}
+          🔧 Manual: MaxFeedInPower = {{ states('input_number.victron_max_feed_in_power_manual') | int }} W
+          {% elif mode == 'Unbegrenzt' %}
+          ♾ Unlimited: MaxFeedInPower = {{ states('input_number.victron_max_feed_in_power_manual') | int }} W
+          {% elif v >= 250 %}
+          🔴 Overvoltage ≥ 250 V → MaxFeedIn blocked (0 W)
+          {% elif v >= 249 %}
+          🟠 Voltage 249–250 V → MaxFeedIn 900 W
+          {% elif v >= 248 %}
+          🟠 Voltage 248–249 V → MaxFeedIn 1500 W
+          {% elif v >= 246 %}
+          🟡 Voltage 246–248 V → MaxFeedIn 2000 W
+          {% elif v >= 244 %}
+          🟡 Voltage 244–246 V → MaxFeedIn 2500 W
+          {% elif v >= 242 %}
+          🟡 Voltage 242–244 V → MaxFeedIn 3000 W
+          {% elif v >= 239 %}
+          🟢 Voltage 239–242 V → MaxFeedIn 3500 W
+          {% elif v >= 237 %}
+          🟢 Voltage 237–239 V → MaxFeedIn 4000 W
+          {% elif v >= 235 %}
+          🟢 Voltage 235–237 V → MaxFeedIn 4500 W
+          {% else %}
+          🟢 Voltage < 235 V → MaxFeedIn {{ states('input_number.victron_max_feed_in_power_manual') | int }} W (normal voltage)
+          {% endif %}
+        secondary: >
+          {% set v = states('sensor.victron_ess_grid_voltage') | float(0) %}
+          {% set p = states('sensor.victron_ess_max_feed_in_power') | int(0) %}
+          Voltage: {{ v | round(1) }} V · MaxFeedIn readback: {{ p }} W
+        icon: >
+          {% set v = states('sensor.victron_ess_grid_voltage') | float(0) %}
+          {{ 'mdi:alert-circle' if v >= 250 else ('mdi:alert' if v >= 246 else 'mdi:check-circle') }}
+        icon_color: >
+          {% set v = states('sensor.victron_ess_grid_voltage') | float(0) %}
+          {{ 'red' if v >= 250 else ('orange' if v >= 246 else ('amber' if v >= 242 else 'green')) }}
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 2. CONTROL / OVERRIDE
+  # ─────────────────────────────────────────────────────────────────────────
+  - type: grid
+    cards:
+      - type: heading
+        heading: Control
+
+      - type: tile
+        entity: input_select.victron_max_feed_in_override
+        name: MaxFeedIn Override
+        icon: mdi:cog-transfer
+
+      - type: tile
+        entity: input_number.victron_max_feed_in_power_manual
+        name: Manual value (W)
+        icon: mdi:flash
+        features:
+          - type: numeric-input
+            mode: slider
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 3. LAST DECISION
+  # ─────────────────────────────────────────────────────────────────────────
+  - type: grid
+    cards:
+      - type: heading
+        heading: Last Decision
+
+      - type: markdown
+        content: >
+          {% set reason = states('input_text.victron_max_feed_in_last_reason') %}
+          {% if reason in ['unknown', 'unavailable', ''] %}
+          *No decision stored yet.*
+          {% else %}
+          `{{ reason }}`
+          {% endif %}
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 4. VOLTAGE TABLE (static reference)
+  # ─────────────────────────────────────────────────────────────────────────
+  - type: grid
+    cards:
+      - type: heading
+        heading: Voltage Table (Blueprint Defaults)
+
+      - type: markdown
+        content: |
+          | Grid Voltage (V)    | MaxFeedInPower (W) | Status |
+          |:-------------------:|:------------------:|:------:|
+          | ≥ 250               | 0                  | 🔴 Blocked |
+          | 249 – 250           | 900                | 🟠 Heavily throttled |
+          | 248 – 249           | 1500               | 🟠 Throttled |
+          | 246 – 248           | 2000               | 🟡 Reduced |
+          | 244 – 246           | 2500               | 🟡 Reduced |
+          | 242 – 244           | 3000               | 🟡 Slightly reduced |
+          | 239 – 242           | 3500               | 🟢 Normal |
+          | 237 – 239           | 4000               | 🟢 Normal |
+          | 235 – 237           | 4500               | 🟢 Normal |
+          | < 235               | {{ states('input_number.victron_max_feed_in_power_manual') | int }} | 🟢 Maximum |
+
+          Thresholds and power values are adjustable in the blueprint instance.
+          Maximum (lowest band): **{{ states('input_number.victron_max_feed_in_power_manual') | int }} W** · Current voltage: **{{ states('sensor.victron_ess_grid_voltage') | float(0) | round(1) }} V**
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 5. VICTRON CONFIGURATION
+  # ─────────────────────────────────────────────────────────────────────────
+  - type: grid
+    cards:
+      - type: heading
+        heading: Victron Configuration
+
+      - type: entities
+        entities:
+          - entity: input_text.victron_grid_system_id
+            name: Victron Grid System ID
+            icon: mdi:identifier
