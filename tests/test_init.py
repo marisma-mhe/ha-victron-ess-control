@@ -10,6 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 
 from custom_components.victron_ess_control import (
+    _deploy_dashboards,
     _deploy_package,
     async_setup_entry,
     async_unload_entry,
@@ -175,3 +176,59 @@ def test_deploy_package_creates_packages_dir_if_missing(
 
     assert config_packages.is_dir()
     assert (config_packages / "victron_ess.yaml").exists()
+
+
+# ── _deploy_dashboards ────────────────────────────────────────────────────────
+
+
+def test_deploy_dashboards_copies_yaml_files(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    hass.config.config_dir = str(tmp_path)
+
+    src_dir = tmp_path / "fake_component" / "dashboards"
+    src_dir.mkdir(parents=True)
+    (src_dir / "feed_in_control_center.yaml").write_text("title: Feed-In\n")
+    (src_dir / "storm_mode_control_center.yaml").write_text("title: Storm\n")
+
+    with patch("custom_components.victron_ess_control._COMPONENT_DIR", tmp_path / "fake_component"):
+        _deploy_dashboards(hass)
+
+    dst = tmp_path / "dashboards" / "victron"
+    assert (dst / "feed_in_control_center.yaml").exists()
+    assert (dst / "storm_mode_control_center.yaml").exists()
+
+
+def test_deploy_dashboards_skips_existing_files(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    hass.config.config_dir = str(tmp_path)
+
+    src_dir = tmp_path / "fake_component" / "dashboards"
+    src_dir.mkdir(parents=True)
+    (src_dir / "feed_in_control_center.yaml").write_text("title: New\n")
+
+    dst = tmp_path / "dashboards" / "victron"
+    dst.mkdir(parents=True)
+    existing = dst / "feed_in_control_center.yaml"
+    existing.write_text("title: Existing\n")
+
+    with patch("custom_components.victron_ess_control._COMPONENT_DIR", tmp_path / "fake_component"):
+        _deploy_dashboards(hass)
+
+    assert existing.read_text() == "title: Existing\n"
+
+
+def test_deploy_dashboards_creates_target_dir(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    hass.config.config_dir = str(tmp_path)
+
+    src_dir = tmp_path / "fake_component" / "dashboards"
+    src_dir.mkdir(parents=True)
+    (src_dir / "overnight_charging_control_center.yaml").write_text("title: Overnight\n")
+
+    with patch("custom_components.victron_ess_control._COMPONENT_DIR", tmp_path / "fake_component"):
+        _deploy_dashboards(hass)
+
+    assert (tmp_path / "dashboards" / "victron").is_dir()
