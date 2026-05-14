@@ -1,0 +1,38 @@
+blueprint:
+  name: Victron Storm – Daily Override Reset
+  description: >
+    Resets input_boolean.storm_mode_manual_override daily at midnight so the
+    automatic storm control (victron_storm_mode_auto_control) can resume the
+    next day. A manually set override stays active for at most one day.
+  domain: automation
+  source_url: https://github.com/marisma-mhe/ha-victron-ess-control/blob/main/blueprints/automation/victron/victron_storm_mode_override_reset.yaml
+
+  input:
+    manual_override_entity:
+      name: Manual Override (input_boolean)
+      description: Turned off daily at reset_time.
+      selector:
+        entity:
+          filter:
+            - domain: input_boolean
+      default: input_boolean.storm_mode_manual_override
+
+    reset_time:
+      name: Reset Time
+      description: Time for the daily reset (default 00:00).
+      selector:
+        time: {}
+      default: "00:00:00"
+
+triggers:
+  - platform: time
+    at: !input reset_time
+
+conditions: []
+
+actions:
+  - action: input_boolean.turn_off
+    target:
+      entity_id: !input manual_override_entity
+
+mode: single

@@ -1,0 +1,265 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Victron Energy Overview — Lovelace View
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Uses Mushroom Cards (HACS: mushroom)
+#
+# HOW TO INCLUDE IN AN EXISTING DASHBOARD
+#   1. Open dashboard → pencil icon → ⋮ menu → "Raw configuration editor"
+#   2. Under "views:" add as a new entry:
+#        views:
+#          - title: Energy Overview    ← paste the contents of this file here
+#   3. Save
+#
+# ───────────────────────────────────────────────────────────────────────────
+# SECTIONS & CARDS
+# ───────────────────────────────────────────────────────────────────────────
+#
+#  1. LIVE STATUS (chips + template)
+#     • Chips: Solar (W), Load (W), Grid (W), Battery SOC (%), Battery power (W)
+#     • Status card: energy flow summary (surplus / grid import / self-sufficiency)
+#
+#  2. SOLAR ENERGY (glance)
+#     • Yield yesterday (victron_ess_solar_yield_yesterday — local, no VRM)
+#     • Yield today (victron_ess_solar_yield_today — local)
+#     • Forecast today + tomorrow (Solcast/VRM)
+#     • Solar → Battery today
+#
+#  3. BATTERY (glance + glance)
+#     • SOC, power, voltage, current, temperature
+#     • Energy flow today: Solar → Bat, Grid → Bat
+#
+#  4. CONSUMPTION & GRID (glance + glance)
+#     • Consumption: today, forecast today, forecast tomorrow
+#     • Grid: voltage, current, power, max feed-in, Grid → Bat today
+#
+# ───────────────────────────────────────────────────────────────────────────
+# SITE-SPECIFIC ENTITIES
+# ───────────────────────────────────────────────────────────────────────────
+#   The following entities are Marisma-specific and must be replaced or removed:
+#   • binary_sensor.grid_connected      — custom grid connectivity sensor
+#   • input_boolean.dismiss_alert_grid  — custom grid alert helper
+#   • sensor.total_solar_production_1f  — single-phase solar total; replace with
+#                                         sensor.victron_ess_solar_power
+#   • sensor.solar_to_battery_current_day — custom daily energy flow sensor
+#   • sensor.grid_to_battery_current_day  — custom daily energy flow sensor
+#
+# ═══════════════════════════════════════════════════════════════════════════
+
+title: Energy Overview
+icon: mdi:solar-panel-large
+type: sections
+max_columns: 2
+
+badges:
+  # [SITE-SPECIFIC] Replace with your own grid connectivity sensor, or remove.
+  - type: entity
+    show_name: true
+    show_state: true
+    show_icon: true
+    entity: binary_sensor.grid_connected
+    color: green
+    name: Grid connected
+    show_entity_picture: false
+  # [SITE-SPECIFIC] Replace with your own grid alert helper, or remove.
+  - type: entity
+    show_name: true
+    show_state: false
+    show_icon: true
+    entity: input_boolean.dismiss_alert_grid
+    color: ""
+    name: Grid Alert!
+    show_entity_picture: true
+    state_content: last_updated
+
+sections:
+
+  # ── 1. Live Status ────────────────────────────────────────────────────────
+  - type: grid
+    cards:
+      - type: heading
+        heading: Live Status
+
+      - type: custom:mushroom-chips-card
+        chips:
+          # [SITE-SPECIFIC] sensor.total_solar_production_1f is a Marisma-specific
+          # single-phase total. Replace with sensor.victron_ess_solar_power.
+          - type: entity
+            entity: sensor.total_solar_production_1f
+            icon: mdi:solar-power-variant
+            icon_color: >
+              {{ 'amber' if states('sensor.total_solar_production_1f') | float(0) > 100 else 'grey' }}
+          - type: entity
+            entity: sensor.victron_ess_consumer_system_load
+            icon: mdi:home-lightning-bolt
+            icon_color: blue
+          - type: entity
+            entity: sensor.victron_ess_grid_power
+            icon: mdi:transmission-tower
+            icon_color: >
+              {% set g = states('sensor.victron_ess_grid_power') | float(0) %}
+              {{ 'red' if g > 100 else ('green' if g < -100 else 'grey') }}
+          - type: entity
+            entity: sensor.victron_ess_battery_soc
+            icon: mdi:battery
+            icon_color: >
+              {% set soc = states('sensor.victron_ess_battery_soc') | float(0) %}
+              {{ 'green' if soc >= 80 else ('amber' if soc >= 40 else 'red') }}
+          - type: entity
+            entity: sensor.victron_ess_battery_power
+            icon: mdi:battery-charging
+            icon_color: >
+              {% set p = states('sensor.victron_ess_battery_power') | float(0) %}
+              {{ 'green' if p > 0 else ('red' if p < 0 else 'grey') }}
+
+      # [SITE-SPECIFIC] Template uses sensor.total_solar_production_1f — replace with
+      # sensor.victron_ess_solar_power if you do not have a 1-phase total sensor.
+      - type: custom:mushroom-template-card
+        primary: >
+          {% set solar = states('sensor.total_solar_production_1f') | float(0) %}
+          {% set load  = states('sensor.victron_ess_consumer_system_load')  | float(0) %}
+          {% set grid  = states('sensor.victron_ess_grid_power')     | float(0) %}
+          {% if solar > load + 50 %}
+          ☀️ Solar surplus: {{ (solar - load) | round(0) }} W
+          {% elif grid > 100 %}
+          🔌 Grid import: {{ grid | round(0) }} W
+          {% else %}
+          ⚖️ Self-sufficiency active
+          {% endif %}
+        secondary: >
+          {% set solar = states('sensor.total_solar_production_1f') | float(0) %}
+          {% set load  = states('sensor.victron_ess_consumer_system_load')  | float(0) %}
+          {% set soc   = states('sensor.victron_ess_battery_soc')   | float(0) %}
+          Solar {{ solar | round(0) }} W · Load {{ load | round(0) }} W · SOC {{ soc | round(0) }}%
+        icon: mdi:solar-power-variant
+        icon_color: >
+          {% set solar = states('sensor.total_solar_production_1f') | float(0) %}
+          {{ 'amber' if solar > 500 else ('green' if solar > 100 else 'grey') }}
+        grid_options:
+          columns: 12
+          rows: 1
+
+  # ── 2. Solar Energy ───────────────────────────────────────────────────────
+  - type: grid
+    cards:
+      - type: heading
+        heading: Solar Energy
+
+      - type: glance
+        title: Yield (kWh)
+        show_name: true
+        show_icon: true
+        show_state: true
+        columns: 2
+        entities:
+          - entity: sensor.victron_ess_solar_yield_yesterday
+            name: Yesterday
+            icon: mdi:solar-power
+          - entity: sensor.victron_ess_solar_yield_today
+            name: Today
+            icon: mdi:solar-power-variant
+          - entity: sensor.solcast_weighted_today_kwh
+            name: Forecast today
+            icon: mdi:sun-clock
+          - entity: sensor.solcast_weighted_tomorrow_kwh
+            name: Forecast tomorrow
+            icon: mdi:weather-sunny
+
+      # [SITE-SPECIFIC] sensor.solar_to_battery_current_day is a Marisma-specific
+      # custom sensor. Replace with your own daily solar→battery energy sensor, or remove.
+      - type: glance
+        title: Solar → Battery (kWh)
+        show_name: true
+        show_icon: true
+        show_state: true
+        columns: 2
+        entities:
+          - entity: sensor.solar_to_battery_current_day
+            name: Today
+            icon: mdi:solar-power
+
+  # ── 3. Battery ────────────────────────────────────────────────────────────
+  - type: grid
+    cards:
+      - type: heading
+        heading: Battery
+
+      - type: glance
+        show_name: true
+        show_icon: true
+        show_state: true
+        columns: 3
+        entities:
+          - entity: sensor.victron_ess_battery_soc
+            name: SOC
+            icon: mdi:battery
+          - entity: sensor.victron_ess_battery_power
+            name: Power
+            icon: mdi:battery-charging
+          - entity: sensor.victron_ess_battery_voltage
+            name: Voltage
+            icon: mdi:flash
+          - entity: sensor.victron_ess_battery_current
+            name: Current
+            icon: mdi:current-dc
+          - entity: sensor.victron_ess_battery_temperature
+            name: Temperature
+            icon: mdi:thermometer
+
+      # [SITE-SPECIFIC] Both sensors below are Marisma-specific custom sensors.
+      # Replace with your own daily energy flow sensors, or remove this card.
+      - type: glance
+        title: Energy flow → Battery (today)
+        show_name: true
+        show_icon: true
+        show_state: true
+        columns: 2
+        entities:
+          - entity: sensor.solar_to_battery_current_day
+            name: Solar → Bat
+            icon: mdi:solar-power
+          - entity: sensor.grid_to_battery_current_day
+            name: Grid → Bat
+            icon: mdi:transmission-tower
+
+  # ── 4. Consumption & Grid ─────────────────────────────────────────────────
+  - type: grid
+    cards:
+      - type: heading
+        heading: Consumption & Grid
+
+      - type: glance
+        title: Consumption (kWh)
+        show_name: true
+        show_icon: true
+        show_state: true
+        columns: 1
+        entities:
+          - entity: sensor.victron_consumer_load_day
+            name: Today
+            icon: mdi:home-lightning-bolt
+
+      - type: glance
+        title: Grid (RED Meter)
+        show_name: true
+        show_icon: true
+        show_state: true
+        columns: 3
+        entities:
+          - entity: sensor.victron_ess_grid_voltage
+            name: Voltage
+            icon: mdi:sine-wave
+          - entity: sensor.victron_ess_meter_current
+            name: Current
+            icon: mdi:current-ac
+          - entity: sensor.victron_ess_grid_power
+            name: Power
+            icon: mdi:transmission-tower
+          - entity: sensor.victron_ess_max_feed_in_power
+            name: Max Feed-In
+            icon: mdi:transmission-tower-export
+          # [SITE-SPECIFIC] sensor.grid_to_battery_current_day is Marisma-specific.
+          # Replace with your own daily grid→battery energy sensor, or remove.
+          - entity: sensor.grid_to_battery_current_day
+            name: Grid → Bat today
+            icon: mdi:engine

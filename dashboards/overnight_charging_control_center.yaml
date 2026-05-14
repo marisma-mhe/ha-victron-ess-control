@@ -1,0 +1,396 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Victron Overnight Charging Control Center — Lovelace View
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Uses Mushroom Cards (HACS: mushroom)
+#
+# HOW TO INCLUDE IN AN EXISTING DASHBOARD
+#   1. Open dashboard → pencil icon → ⋮ menu → "Raw configuration editor"
+#   2. Under "views:" add as a new entry:
+#        views:
+#          - title: Overnight Charging    ← paste the contents of this file here
+#   3. Save
+#
+# ───────────────────────────────────────────────────────────────────────────
+# SECTIONS & CARDS
+# ───────────────────────────────────────────────────────────────────────────
+#
+#  1. LIVE STATUS (chips + template)
+#     • Chips: SOC, charge power, solar, grid
+#     • Status card: current charge window (in/out), override, SOC vs. target
+#
+#  2. SETTINGS (select + number + entity)
+#     • Charge override: Auto / Force Charge / Block Charge
+#     • Night window start/end (input_datetime)
+#     • Charge power (W), SOC floor (%), target normal (%), target storm (%)
+#     • Storm mode (input_boolean)
+#
+#  3. DAILY CONSUMPTION (boolean + select + template + number)
+#     • Auto mode toggle (input_boolean.daily_consumption_auto_mode)
+#     • Time window 3/5/7 days (input_select.daily_consumption_avg_window)
+#     • Calculated rolling avg (sensor.daily_consumption_avg_kwh, read-only)
+#     • Active value slider (input_number.daily_consumption_kwh, editable)
+#
+#  4. FORECAST (template + markdown)
+#     • Dynamic target SOC (dyn sensor, Normal, Storm)
+#     • Solcast today/tomorrow
+#     • solar_enough: does Solcast + current SOC reach the target?
+#     • Decision preview: would the blueprint charge right now?
+#
+#  5. LAST DECISION (markdown)
+#     • input_text.victron_last_reason — timestamp + reason + detail values
+#
+# ───────────────────────────────────────────────────────────────────────────
+# DECISION LOGIC (auto mode, order as in blueprint)
+# ───────────────────────────────────────────────────────────────────────────
+#   Protection  SOC < soc_floor → always charge (independent of window/override)
+#   Override    Force Charge + in window → charge
+#               Block Charge            → never charge
+#   Auto 1      in window + solar_enough              → no charging (solar sufficient)
+#   Auto 2      in window + !solar_enough + SOC<target → charge
+#   otherwise   outside window                        → no charging
+#
+#   Target SOC: dyn sensor if > 0, else storm target if storm mode, else normal target
+#               effective: max(target, soc_floor)
+#   solar_enough: (soc% × capacity) + solcast_today_kwh ≥ (target% × capacity)
+#
+# ═══════════════════════════════════════════════════════════════════════════
+title: Overnight Charging
+icon: mdi:battery-charging-wireless
+type: sections
+max_columns: 2
+sections:
+  - type: grid
+    cards:
+      - type: heading
+        heading: Live Status
+      - type: custom:mushroom-chips-card
+        chips:
+          - type: entity
+            entity: sensor.victron_ess_battery_soc
+            icon: mdi:battery
+            icon_color: >
+              {% set soc = states('sensor.victron_ess_battery_soc') | float(0) %} {{
+              'green' if soc >= 80 else ('amber' if soc >= 40 else 'red') }}
+          - type: entity
+            entity: sensor.victron_ess_battery_power
+            icon: mdi:battery-charging
+            icon_color: >
+              {% set v = states('sensor.victron_ess_battery_power') | float(0) %} {{
+              'green' if v > 0 else ('red' if v < 0 else 'grey') }}
+          - type: entity
+            entity: sensor.victron_ess_solar_power
+            icon: mdi:solar-power-variant
+            icon_color: >
+              {{ 'amber' if states('sensor.victron_ess_solar_power') |
+              float(0) > 100 else 'grey' }}
+          - type: entity
+            entity: sensor.victron_ess_grid_power
+            icon: mdi:transmission-tower
+            icon_color: >
+              {% set g = states('sensor.victron_ess_grid_power') | float(0) %} {{ 'red' if
+              g > 100 else ('green' if g < -100 else 'grey') }}
+      - type: custom:mushroom-template-card
+        primary: >
+          {% set s = today_at(states('input_datetime.victron_night_start')) %}
+          {% set e = today_at(states('input_datetime.victron_night_end')) %} {%
+          set inwin = (now() >= s and now() < e) if s <= e else (now() >= s or
+          now() < e) %} {% set mode =
+          states('input_select.victron_charge_override') %} {% set soc =
+          states('sensor.victron_ess_battery_soc') | float(0) %} {% set floor =
+          states('input_number.victron_soc_floor') | float(20) %} {% set dyn =
+          states('sensor.victron_dynamic_target_soc_now') | float(0) %} {% set
+          storm = is_state('input_boolean.storm_mode', 'on') %} {% set base =
+          states('input_number.victron_target_soc_storm') | float(90) if storm
+          else states('input_number.victron_target_soc_normal') | float(80) %}
+          {% set target = [dyn if dyn > 0 else base, floor] | max %} {% set cap
+          = states('input_number.battery_capacity_kwh') | float(96) %} {% set
+          sol = states('sensor.solcast_weighted_remaining_today_kwh') | float(0)
+          %} {% set cons_avg = states('sensor.daily_consumption_avg_kwh') | float(-1) %} {% set cons = cons_avg if (is_state('input_boolean.daily_consumption_auto_mode', 'on') and cons_avg >= 0) else states('input_number.daily_consumption_kwh') | float(60) %}
+          {% set eff = states('input_number.charge_efficiency') | float(0.95) %}
+          {% set net_sol = [sol - cons, 0] | max %}
+          {% set solar_enough = (soc * cap / 100) + net_sol * eff >= (target * cap / 100) %}
+          {% if mode == 'Block Charge' %}🚫 Block Charge {% elif soc <
+          floor %}⚡ Protection: SOC below floor {% elif mode == 'Force Charge'
+          and inwin %}⚡ Force Charge active {% elif inwin and not solar_enough
+          and soc < target %}🔋 Auto-charging active {% elif inwin and (solar_enough
+          or soc >= target) %}✅ No charging — solar sufficient {% else %}⏸ Outside
+          night window {% endif %}
+        secondary: >
+          {% set s = today_at(states('input_datetime.victron_night_start')) %}
+          {% set e = today_at(states('input_datetime.victron_night_end')) %} {%
+          set inwin = (now() >= s and now() < e) if s <= e else (now() >= s or
+          now() < e) %} {% set soc = states('sensor.victron_ess_battery_soc') |
+          float(0) %} {% set floor = states('input_number.victron_soc_floor') |
+          float(20) %} {% set dyn =
+          states('sensor.victron_dynamic_target_soc_now') | float(0) %} {% set
+          storm = is_state('input_boolean.storm_mode', 'on') %} {% set base =
+          states('input_number.victron_target_soc_storm') | float(90) if storm
+          else states('input_number.victron_target_soc_normal') | float(80) %}
+          {% set target = [dyn if dyn > 0 else base, floor] | max %} SOC {{ soc
+          | round(0) }}% → Target {{ target | round(0) }}% · Window {{
+          states('input_datetime.victron_night_start') }} – {{
+          states('input_datetime.victron_night_end') }}
+        icon: >
+          {% set mode = states('input_select.victron_charge_override') %} {% set
+          soc = states('sensor.victron_ess_battery_soc') | float(0) %} {% set floor =
+          states('input_number.victron_soc_floor') | float(20) %} {% if mode ==
+          'Block Charge' %}mdi:battery-off {% elif soc < floor
+          %}mdi:battery-alert {% elif mode == 'Force Charge'
+          %}mdi:battery-charging-100 {% else %}mdi:battery-charging-outline {%
+          endif %}
+        color: >
+          {% set s = today_at(states('input_datetime.victron_night_start')) %}
+          {% set e = today_at(states('input_datetime.victron_night_end')) %} {%
+          set inwin = (now() >= s and now() < e) if s <= e else (now() >= s or
+          now() < e) %} {% set mode =
+          states('input_select.victron_charge_override') %} {% set soc =
+          states('sensor.victron_ess_battery_soc') | float(0) %} {% set floor =
+          states('input_number.victron_soc_floor') | float(20) %} {% set dyn =
+          states('sensor.victron_dynamic_target_soc_now') | float(0) %} {% set
+          storm = is_state('input_boolean.storm_mode', 'on') %} {% set base =
+          states('input_number.victron_target_soc_storm') | float(90) if storm
+          else states('input_number.victron_target_soc_normal') | float(80) %}
+          {% set target = [dyn if dyn > 0 else base, floor] | max %} {% set cap
+          = states('input_number.battery_capacity_kwh') | float(96) %} {% set
+          sol = states('sensor.solcast_weighted_remaining_today_kwh') | float(0)
+          %} {% set cons_avg = states('sensor.daily_consumption_avg_kwh') | float(-1) %} {% set cons = cons_avg if (is_state('input_boolean.daily_consumption_auto_mode', 'on') and cons_avg >= 0) else states('input_number.daily_consumption_kwh') | float(60) %}
+          {% set eff = states('input_number.charge_efficiency') | float(0.95) %}
+          {% set net_sol = [sol - cons, 0] | max %}
+          {% set solar_enough = (soc * cap / 100) + net_sol * eff >= (target * cap / 100) %}
+          {% if mode == 'Block Charge' %}red {% elif soc < floor or
+          (inwin and not solar_enough and soc < target) or (mode == 'Force
+          Charge' and inwin) %}green {% else %}grey {% endif %}
+        features_position: bottom
+        grid_options:
+          columns: 12
+          rows: 1
+  - type: grid
+    cards:
+      - type: heading
+        heading: 🔆 Solcast Forecast
+      - type: custom:mushroom-template-card
+        primary: >
+          Today: {{ states('sensor.solcast_weighted_remaining_today_kwh') |
+          float(0) | round(1) }} kWh · Tomorrow: {{
+          states('sensor.solcast_weighted_remaining_tomorrow_kwh') | float(0) |
+          round(1) }} kWh
+        secondary: >
+          {% set sol = states('sensor.solcast_weighted_remaining_today_kwh') |
+          float(0) %} {% set soc = states('sensor.victron_ess_battery_soc') |
+          float(0) %} {% set cap = states('input_number.battery_capacity_kwh') |
+          float(96) %} {% set floor = states('input_number.victron_soc_floor') |
+          float(20) %} {% set dyn =
+          states('sensor.victron_dynamic_target_soc_now') | float(0) %} {% set
+          storm = is_state('input_boolean.storm_mode', 'on') %} {% set base =
+          states('input_number.victron_target_soc_storm') | float(90) if storm
+          else states('input_number.victron_target_soc_normal') | float(80) %}
+          {% set target = [dyn if dyn > 0 else base, floor] | max %}
+          {% set cons_avg = states('sensor.daily_consumption_avg_kwh') | float(-1) %}
+          {% set cons = cons_avg if (is_state('input_boolean.daily_consumption_auto_mode', 'on') and cons_avg >= 0) else states('input_number.daily_consumption_kwh') | float(60) %}
+          {% set eff = states('input_number.charge_efficiency') | float(0.95) %}
+          {% set net_sol = [sol - cons, 0] | max %}
+          {% set solar_enough = (soc * cap / 100) + net_sol * eff >= (target * cap / 100) %}
+          {{ '✅ Solar sufficient for target SOC' if solar_enough else '❌ Night charging needed' }}
+        icon: mdi:sun-clock
+        color: >
+          {% set sol = states('sensor.solcast_weighted_remaining_today_kwh') |
+          float(0) %} {{ 'amber' if sol > 5 else ('orange' if sol > 1 else
+          'grey') }}
+        features_position: bottom
+        grid_options:
+          columns: 12
+          rows: 1
+      - type: history-graph
+        title: Solcast history (24h)
+        hours_to_show: 24
+        entities:
+          - entity: sensor.solcast_weighted_remaining_today_kwh
+            name: Solar remaining today
+          - entity: sensor.solcast_weighted_remaining_tomorrow_kwh
+            name: Solar remaining tomorrow
+      - type: custom:mushroom-chips-card
+        alignment: center
+        chips:
+          - type: action
+            icon: mdi:update
+            name: Solcast Update
+            tap_action:
+              action: call-service
+              service: solcast_solar.update_forecasts
+          - type: action
+            icon: mdi:refresh
+            name: Automation Reload
+            tap_action:
+              action: call-service
+              service: automation.reload
+  - type: grid
+    cards:
+      - type: heading
+        heading: Settings
+      - type: tile
+        entity: input_select.victron_charge_override
+        name: Charge override
+        icon: mdi:tune
+      - type: tile
+        entity: input_boolean.storm_mode
+        name: Storm mode
+        icon: mdi:weather-lightning-rainy
+      - type: tile
+        entity: input_number.victron_charge_power
+        name: Charge power
+        icon: mdi:lightning-bolt
+      - type: tile
+        entity: input_number.victron_soc_floor
+        name: SOC floor (protection)
+        icon: mdi:battery-alert
+      - type: tile
+        entity: input_number.victron_target_soc_normal
+        name: Target SOC Normal
+        icon: mdi:battery-arrow-up
+      - type: tile
+        entity: input_number.victron_target_soc_storm
+        name: Target SOC Storm
+        icon: mdi:weather-lightning
+      - type: entities
+        title: Night window
+        entities:
+          - entity: input_datetime.victron_night_start
+            name: Start
+            icon: mdi:weather-night
+          - entity: input_datetime.victron_night_end
+            name: End
+            icon: mdi:weather-sunny
+  - type: grid
+    cards:
+      - type: heading
+        heading: Daily Consumption
+      - type: tile
+        entity: input_boolean.daily_consumption_auto_mode
+        name: Auto mode (rolling avg)
+        icon: mdi:calculator-variant
+      - type: tile
+        entity: input_select.daily_consumption_avg_window
+        name: Time window
+        icon: mdi:calendar-range
+      - type: custom:mushroom-template-card
+        primary: >
+          {% set v = states('sensor.daily_consumption_avg_kwh') | float(-1) %}
+          {{ v | round(1) ~ ' kWh/day' if v >= 0 else 'Calculating…' }}
+        secondary: >
+          {% set window = states('input_select.daily_consumption_avg_window') %}
+          Calculated avg ({{ window }}) · basis: AC load 3f
+        icon: mdi:chart-bell-curve
+        color: >
+          {% set auto = is_state('input_boolean.daily_consumption_auto_mode', 'on') %}
+          {{ 'blue' if auto else 'grey' }}
+        grid_options:
+          columns: 12
+          rows: 1
+      - type: tile
+        entity: input_number.daily_consumption_kwh
+        name: Active consumption value
+        icon: mdi:home-lightning-bolt
+        grid_options:
+          columns: 12
+          rows: 1
+  - type: grid
+    cards:
+      - type: heading
+        heading: Forecast & Decision
+      - type: custom:mushroom-template-card
+        primary: >
+          {% set dyn = states('sensor.victron_dynamic_target_soc_now') |
+          float(0) %} {% set storm = is_state('input_boolean.storm_mode', 'on')
+          %} {% set base = states('input_number.victron_target_soc_storm') |
+          float(90) if storm else
+          states('input_number.victron_target_soc_normal') | float(80) %} {% set
+          floor = states('input_number.victron_soc_floor') | float(20) %} {% set
+          target = [dyn if dyn > 0 else base, floor] | max %} Effective
+          target SOC: {{ target | round(0) }}%
+        secondary: >
+          {% set dyn = states('sensor.victron_dynamic_target_soc_now') |
+          float(0) %} {% set storm = is_state('input_boolean.storm_mode', 'on')
+          %} {% if dyn > 0 %}Dyn sensor: {{ dyn | round(0) }}% (overrides
+          Normal/Storm) {% elif storm %}Storm mode active → {{
+          states('input_number.victron_target_soc_storm') | float(90) | round(0)
+          }}% {% else %}Normal → {{
+          states('input_number.victron_target_soc_normal') | float(80) |
+          round(0) }}% {% endif %}
+        icon: mdi:target
+        color: >
+          {% set dyn = states('sensor.victron_dynamic_target_soc_now') |
+          float(0) %} {% set storm = is_state('input_boolean.storm_mode', 'on')
+          %} {{ 'purple' if dyn > 0 else ('red' if storm else 'blue') }}
+        features_position: bottom
+        grid_options:
+          columns: 12
+          rows: 1
+      - type: custom:mushroom-chips-card
+        chips:
+          - type: entity
+            entity: sensor.solcast_weighted_remaining_today_kwh
+            icon: mdi:sun-clock
+            icon_color: amber
+          - type: entity
+            entity: sensor.solcast_weighted_remaining_tomorrow_kwh
+            icon: mdi:weather-sunny-alert
+            icon_color: orange
+      - type: markdown
+        content: >
+          {% set soc_raw = states('sensor.victron_ess_battery_soc') %}
+          {% set soc_valid = soc_raw | is_number %}
+          {% set soc = soc_raw | float(0) %}
+          {% set cap = states('input_number.battery_capacity_kwh') | float(96) %}
+          {% set floor = states('input_number.victron_soc_floor') | float(20) %}
+          {% set dyn = states('sensor.victron_dynamic_target_soc_now') | float(0) %}
+          {% set storm = is_state('input_boolean.storm_mode', 'on') %}
+          {% set base = states('input_number.victron_target_soc_storm') | float(90) if storm else states('input_number.victron_target_soc_normal') | float(80) %}
+          {% set target = [dyn if dyn > 0 else base, floor] | max %}
+          {% set remaining_today = states('sensor.solcast_weighted_remaining_today_kwh') | float(0) %}
+          {% set remaining_tomorrow = states('sensor.solcast_weighted_remaining_tomorrow_kwh') | float(0) %}
+          {% set s = today_at(states('input_datetime.victron_night_start')) %}
+          {% set e = today_at(states('input_datetime.victron_night_end')) %}
+          {% set inwin = (now() >= s and now() < e) if s <= e else (now() >= s or now() < e) %}
+          {% set mode = states('input_select.victron_charge_override') %}
+          {% set using_tomorrow = remaining_today < 0.5 and not inwin %}
+          {% set sol = remaining_tomorrow if using_tomorrow else remaining_today %}
+          {% set sol_label = 'Tomorrow forecast' if using_tomorrow else 'Remaining today' %}
+          {% set soc_kwh = soc * cap / 100 %}
+          {% set target_kwh = target * cap / 100 %}
+          {% set cons_avg = states('sensor.daily_consumption_avg_kwh') | float(-1) %}
+          {% set cons = cons_avg if (is_state('input_boolean.daily_consumption_auto_mode', 'on') and cons_avg >= 0) else states('input_number.daily_consumption_kwh') | float(60) %}
+          {% set eff = states('input_number.charge_efficiency') | float(0.95) %}
+          {% set net_sol = [sol - cons, 0] | max %}
+          {% set planned_kwh = soc_kwh + net_sol * eff %}
+          {% set solar_enough = planned_kwh >= target_kwh %}
+
+          **Solar planning{% if using_tomorrow %} (tomorrow's forecast — no more solar today){% endif %}:**
+          {{ sol_label }}: {{ sol | round(1) }} kWh − cons. {{ cons | round(1) }} kWh = {{ net_sol | round(1) }} kWh net × {{ eff }} = {{ (net_sol * eff) | round(1) }} kWh usable
+          Battery now: {{ soc_kwh | round(1) }} kWh + {{ (net_sol * eff) | round(1) }} kWh solar = {{ planned_kwh | round(1) }} kWh → target: {{ target_kwh | round(1) }} kWh ({{ target | round(0) }}%)
+          {{ '✅ Solar sufficient — no night charging needed' if solar_enough else '❌ Solar insufficient — night charging planned' }}
+
+          **Night window:** {{ '✅ active' if inwin else '⏸ inactive' }} ({{
+          states('input_datetime.victron_night_start') }} – {{
+          states('input_datetime.victron_night_end') }})
+
+          **Decision preview:**
+          {% if not soc_valid %}⚠️ SOC sensor unavailable — automation waiting for value
+          {% elif mode == 'Block Charge' %}🚫 Block Charge — no charging
+          {% elif soc < floor %}⚡ SOC {{ soc | round(0) }}% below floor {{ floor | round(0) }}% — protection charging active (independent of window & solar)
+          {% elif mode == 'Force Charge' and inwin %}⚡ Force Charge in window → charging at {{ states('input_number.victron_charge_power') | int }} W
+          {% elif inwin and not solar_enough and soc < target %}🔋 Auto: in window, solar insufficient, SOC {{ soc | round(0) }}% < {{ target | round(0) }}% → charging
+          {% elif inwin and solar_enough %}✅ Auto: in window, solar sufficient → no charging
+          {% elif inwin and soc >= target %}✅ Auto: in window, target reached → no charging
+          {% else %}⏸ Outside night window — no charging until {{ states('input_datetime.victron_night_start') }}
+          {% endif %}
+  - type: grid
+    columns: 1
+    cards:
+      - type: heading
+        heading: Last Decision
+      - type: markdown
+        content: >
+          {% set s = states('input_text.victron_last_reason') %} {% if s in
+          ['unknown', 'unavailable', ''] %} *No decision recorded yet.* {% else %} {{ s }} {% endif %}
+cards: []

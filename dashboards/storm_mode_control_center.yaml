@@ -1,0 +1,262 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Storm Mode Control Center — Lovelace View
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Uses native HA cards only (no HACS required): glance, tile, entities, markdown
+#
+# HOW TO INCLUDE IN AN EXISTING DASHBOARD
+#   1. Open dashboard → pencil icon → ⋮ menu → "Raw configuration editor"
+#   2. Under "views:" add as a new entry:
+#        views:
+#          - title: Storm Mode    ← paste the contents of this file here
+#   3. Save
+#
+# ───────────────────────────────────────────────────────────────────────────
+# SECTIONS & CARDS
+# ───────────────────────────────────────────────────────────────────────────
+#
+#  1. CURRENT STATUS (tile + markdown)
+#     • Storm mode (input_boolean.storm_mode) — currently active/inactive
+#     • Storm Forecast Sensor (binary_sensor.storm_forecast) — trigger
+#     • Markdown: active reason (reason attribute of binary_sensor)
+#     • Markdown: effect on overnight charge target (Normal vs. Storm %)
+#
+#  2. SIGNALS (markdown)
+#     • Signal A: Solcast tomorrow kWh/kWp vs. threshold
+#     • Signal B: Weather forecast precipitation probability + amount
+#     • Signal C: Weather forecast condition (rainy/hail/pouring/…)
+#     • Signal D: Ecowitt rain rate active (≥5 mm/h for 30 min) [SITE-SPECIFIC]
+#     Each signal shows current value + threshold + status (✅/❌)
+#
+#  3. FORECAST TODAY (glance + glance)
+#     • Ecowitt Live: rain rate, 24h rain, wind gusts, solar radiation [SITE-SPECIFIC]
+#     • Weather forecast tomorrow (from helpers): precip_prob, precip_mm, condition
+#
+#  4. SETTINGS (tile + entities)
+#     • Auto detection active (storm_mode_auto_enabled)
+#     • Manual override (storm_mode_manual_override)
+#     • Precipitation thresholds (prob %, mm)
+#     • Solcast threshold (kWh/kWp)
+#     • Charge targets Normal / Storm (%)
+#
+# ───────────────────────────────────────────────────────────────────────────
+# DECISION LOGIC (Storm mode AUTO — all signals OR-linked)
+# ───────────────────────────────────────────────────────────────────────────
+#   Signal A  Solcast tomorrow kWh/kWp < victron_storm_threshold (2.0)
+#   Signal B  Weather precip_prob ≥ threshold AND precip_mm ≥ threshold
+#   Signal C  Weather condition in [rainy, lightning-rainy, hail, pouring]
+#   Signal D  Ecowitt rain_rate ≥ 5 mm/h for 30 min [SITE-SPECIFIC]
+#
+#   Activation:   immediate on first signal
+#   Deactivation: only after 4h stability (all signals gone)
+#   Override:     storm_mode_manual_override blocks auto deactivation
+#   Reset:        override reset daily at midnight
+# ═══════════════════════════════════════════════════════════════════════════
+
+title: Storm Mode
+icon: mdi:weather-lightning
+type: sections
+max_columns: 2
+
+sections:
+
+  # ── Current Status ────────────────────────────────────────────────────────
+  - type: grid
+    title: Current Status
+    cards:
+
+      - type: tile
+        entity: input_boolean.storm_mode
+        name: Storm Mode
+        icon: mdi:weather-lightning
+        color: red
+
+      - type: tile
+        entity: binary_sensor.storm_forecast
+        name: Storm Forecast Sensor
+        icon: mdi:weather-rainy
+
+      - type: markdown
+        content: >
+          {% set reason = state_attr('binary_sensor.storm_forecast', 'reason') %}
+          {% set forecast_on = is_state('binary_sensor.storm_forecast', 'on') %}
+          {% set storm_on = is_state('input_boolean.storm_mode', 'on') %}
+          **Active reason:**
+          {{ reason if reason and reason != 'No storm signal' else '*No active storm signal*' }}
+
+          **Source:** {{ 'Auto (sensor)' if storm_on and forecast_on else ('Manual / Override' if storm_on else '—') }}
+
+      - type: markdown
+        content: >
+          {% set normal = states('input_number.victron_target_soc_normal') | float(80) %}
+          {% set storm = states('input_number.victron_target_soc_storm') | float(90) %}
+          {% set storm_on = is_state('input_boolean.storm_mode', 'on') %}
+          {% set dyn = states('sensor.victron_dynamic_target_soc_now') | float(0) %}
+          **Effect on overnight charge target:**
+          Without storm: **{{ normal | round(0) }}%** → With storm: **{{ storm | round(0) }}%**
+          Currently active: **{{ storm | round(0) if storm_on else normal | round(0) }}%** {{ '(Storm)' if storm_on else '(Normal)' }}
+          {% if dyn > 0 %}
+          Dynamic override target: **{{ dyn | round(0) }}%** (sensor active)
+          {% endif %}
+
+  # ── Signals ───────────────────────────────────────────────────────────────
+  - type: grid
+    title: Signals
+    cards:
+
+      - type: markdown
+        title: "Signal A — Solcast"
+        content: >
+          {% set kwp = states('sensor.solcast_weighted_tomorrow_kwh_kwp') | float(0) %}
+          {% set threshold = states('input_number.victron_storm_threshold') | float(2.0) %}
+          **{{ kwp | round(2) }} kWh/kWp** / threshold {{ threshold }} kWh/kWp
+          {% if kwp <= 0 %}
+          ⚠️ No Solcast data
+          {% elif kwp < threshold %}
+          ✅ Active — low solar, grid reserve needed
+          {% else %}
+          ❌ Inactive
+          {% endif %}
+
+      - type: markdown
+        title: "Signal B — Precipitation Forecast"
+        content: >
+          {% set prob = states('input_number.storm_forecast_precip_prob') | float(0) %}
+          {% set mm = states('input_number.storm_forecast_precip_mm') | float(0) %}
+          {% set prob_thr = states('input_number.storm_auto_precip_probability_threshold') | float(70) %}
+          {% set mm_thr = states('input_number.storm_auto_precip_mm_threshold') | float(3) %}
+          **{{ prob | round(0) | int }}%** / {{ prob_thr | int }}% prob. · **{{ mm | round(1) }} mm** / {{ mm_thr | round(1) }} mm
+          {% if prob >= prob_thr and mm >= mm_thr %}
+          ✅ Active — heavy rain forecast
+          {% else %}
+          ❌ Inactive
+          {% endif %}
+
+      - type: markdown
+        title: "Signal C — Weather Condition"
+        content: >
+          {% set condition = states('input_text.storm_forecast_condition') %}
+          {% set signal_c = condition in ['rainy', 'lightning-rainy', 'hail', 'pouring'] %}
+          **{{ condition if condition not in ['', 'unknown'] else '—' }}**
+          (storm-typical: rainy · lightning-rainy · hail · pouring)
+          {% if signal_c %}
+          ✅ Active — storm condition detected
+          {% else %}
+          ❌ Inactive
+          {% endif %}
+
+      # [SITE-SPECIFIC] Signal D uses a hardcoded Ecowitt sensor ID.
+      # Replace sensor.ecowitt_rain_rate_d8c1 with your own rain rate sensor,
+      # or remove this card if you don't have a local weather station.
+      - type: markdown
+        title: "Signal D — Ecowitt Heavy Rain [SITE-SPECIFIC]"
+        content: >
+          {% set rain_rate = states('sensor.ecowitt_rain_rate_d8c1') | float(0) %}
+          {% set signal_d = is_state('binary_sensor.storm_rain_active', 'on') %}
+          **{{ rain_rate | round(1) }} mm/h** current / threshold 5 mm/h for 30 min
+          {% if signal_d %}
+          ✅ Active — heavy rain persisting
+          {% elif rain_rate >= 5 %}
+          ⏳ Threshold active — waiting
+          {% else %}
+          ❌ Inactive
+          {% endif %}
+
+  # ── Forecast & Live Sensors ───────────────────────────────────────────────
+  - type: grid
+    title: Forecast & Live Sensors
+    cards:
+
+      - type: glance
+        title: Weather forecast tomorrow (cached)
+        show_name: true
+        show_icon: true
+        show_state: true
+        columns: 3
+        entities:
+          - entity: input_number.storm_forecast_precip_prob
+            name: Rain prob.
+            icon: mdi:water-percent
+          - entity: input_number.storm_forecast_precip_mm
+            name: Precipitation
+            icon: mdi:weather-pouring
+          - entity: input_text.storm_forecast_condition
+            name: Condition
+            icon: mdi:weather-cloudy
+
+      # [SITE-SPECIFIC] These Ecowitt entities use site-specific sensor IDs.
+      # Replace with your own weather station sensor IDs, or remove this card.
+      - type: glance
+        title: Ecowitt Live [SITE-SPECIFIC]
+        show_name: true
+        show_icon: true
+        show_state: true
+        columns: 3
+        entities:
+          - entity: sensor.ecowitt_rain_rate_d8c1
+            name: Rain rate
+            icon: mdi:weather-rainy
+          - entity: sensor.ecowitt_24h_rain_d8c1
+            name: 24h rain
+            icon: mdi:cup-water
+          - entity: sensor.ecowitt_wind_gust_0x0c
+            name: Wind gusts
+            icon: mdi:weather-windy
+          - entity: sensor.ecowitt_solar_radiation_ch15
+            name: Solar rad.
+            icon: mdi:weather-sunny
+          - entity: sensor.ecowitt_pressure_relative
+            name: Pressure
+            icon: mdi:gauge
+
+      - type: glance
+        title: Solcast tomorrow
+        show_name: true
+        show_icon: true
+        show_state: true
+        columns: 2
+        entities:
+          - entity: sensor.solcast_weighted_tomorrow_kwh_kwp
+            name: kWh/kWp tomorrow
+            icon: mdi:solar-power
+          - entity: sensor.solcast_weighted_remaining_tomorrow_kwh
+            name: kWh tomorrow
+            icon: mdi:sun-clock
+
+  # ── Settings ──────────────────────────────────────────────────────────────
+  - type: grid
+    title: Settings
+    cards:
+
+      - type: tile
+        entity: input_boolean.storm_mode_auto_enabled
+        name: Auto detection active
+        icon: mdi:robot
+
+      - type: tile
+        entity: input_boolean.storm_mode_manual_override
+        name: Manual override (blocks auto)
+        icon: mdi:hand-back-right
+
+      - type: entities
+        title: Thresholds
+        entities:
+          - entity: input_number.storm_auto_precip_probability_threshold
+            name: Precipitation probability threshold (%)
+            icon: mdi:water-percent
+          - entity: input_number.storm_auto_precip_mm_threshold
+            name: Precipitation amount threshold (mm)
+            icon: mdi:weather-rainy
+          - entity: input_number.victron_storm_threshold
+            name: Solcast threshold (kWh/kWp)
+            icon: mdi:solar-power-variant
+
+      - type: entities
+        title: Charge targets
+        entities:
+          - entity: input_number.victron_target_soc_normal
+            name: Target Normal (%)
+            icon: mdi:battery-80
+          - entity: input_number.victron_target_soc_storm
+            name: Target Storm (%)
+            icon: mdi:battery-charging

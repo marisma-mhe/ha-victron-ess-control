@@ -1,0 +1,204 @@
+blueprint:
+  name: Victron Pre-Midnight Charging Decision
+  description: >
+    At a configurable evaluation time (default 23:00), checks whether grid charging
+    is needed tonight. If so, shifts the overnight charging start time to the latest
+    possible moment that still allows full charging to complete by the reset time
+    (default 08:00), then optionally notifies and logs.
+
+    At the reset time, the night start is reset to midnight (00:00) so the overnight
+    charging blueprint picks it up normally the next night.
+
+    Prerequisites:
+      - A sensor reporting estimated kWh of grid charging needed tonight
+        (e.g. sensor.victron_charge_needed_tonight_kwh from the Victron ESS package).
+        Values > 0 trigger the window shift; 0 means no charging needed.
+      - The Victron Smart Overnight Charging blueprint must be active —
+        it reads victron_night_start and acts on the shifted window.
+
+    Risk: if the Solcast forecast worsens after the evaluation time, the delayed
+    window may be too short. The overnight blueprint will charge as fast as possible
+    from the shifted start.
+
+  domain: automation
+  source_url: https://github.com/marisma-mhe/ha-victron-ess-control/blob/main/blueprints/automation/victron/victron_pre_midnight_charging_decision.yaml
+
+  input:
+    charge_needed_sensor:
+      name: Charge Needed Tonight (kWh)
+      description: >
+        Sensor reporting how many kWh of grid charging are needed tonight.
+        Values > 0 trigger the window shift. Use sensor.victron_charge_needed_tonight_kwh
+        from the Victron ESS package, or any sensor with equivalent semantics.
+      selector:
+        entity:
+          domain: sensor
+
+    battery_soc_sensor:
+      name: Battery SOC Sensor
+      description: Sensor reporting current battery state of charge (%). Used in notification and log.
+      default: sensor.victron_ess_battery_soc
+      selector:
+        entity:
+          domain: sensor
+          device_class: battery
+
+    solcast_tomorrow_sensor:
+      name: Solcast Remaining Tomorrow (kWh) — optional
+      description: >
+        Sensor reporting estimated solar yield remaining for tomorrow (kWh).
+        Included in the notification message when set. Leave empty to omit.
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+
+    charge_power_entity:
+      name: Charge Power Helper
+      description: input_number defining grid charging power in W.
+      default: input_number.victron_charge_power
+      selector:
+        entity:
+          domain: input_number
+
+    charge_efficiency_entity:
+      name: Charge Efficiency Helper
+      description: input_number defining charging efficiency (0.80–1.00).
+      default: input_number.charge_efficiency
+      selector:
+        entity:
+          domain: input_number
+
+    night_start_entity:
+      name: Night Start Helper
+      description: >
+        input_datetime controlling when overnight charging begins. This blueprint
+        shifts it to the latest viable start and resets it to midnight after the
+        reset time.
+      default: input_datetime.victron_night_start
+      selector:
+        entity:
+          domain: input_datetime
+
+    last_reason_entity:
+      name: Last Reason Log — optional
+      description: input_text to log the charging decision with timestamp. Leave empty to skip.
+      default: ""
+      selector:
+        entity:
+          domain: input_text
+
+    notify_target:
+      name: Notification Target — optional
+      description: >
+        Notification service to call when charging is scheduled
+        (e.g. notify.all_devices, notify.mobile_app_my_phone).
+        Leave empty to disable notifications.
+      default: ""
+      selector:
+        text:
+
+    evaluate_time:
+      name: Evaluation Time
+      description: Time at which the charging decision is made each night.
+      default: "23:00:00"
+      selector:
+        time:
+
+    reset_time:
+      name: Reset Time
+      description: >
+        Time at which the night start is reset to midnight for the next night.
+        Also used as the charging completion target when calculating the latest
+        possible start time (e.g. 08:00 means charging must finish by 08:00).
+      default: "08:00:00"
+      selector:
+        time:
+
+variables:
+  _charge_needed_sensor: !input charge_needed_sensor
+  _battery_soc_sensor: !input battery_soc_sensor
+  _solcast_tomorrow_sensor: !input solcast_tomorrow_sensor
+  _charge_power_entity: !input charge_power_entity
+  _charge_efficiency_entity: !input charge_efficiency_entity
+  _last_reason_entity: !input last_reason_entity
+  _notify: !input notify_target
+  _reset_time: !input reset_time
+
+trigger:
+  - platform: time
+    at: !input evaluate_time
+    id: evaluate
+  - platform: time
+    at: !input reset_time
+    id: reset
+
+condition: []
+
+action:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: evaluate
+          - condition: numeric_state
+            entity_id: !input charge_needed_sensor
+            above: 0
+        sequence:
+          - variables:
+              start_time: >
+                {% set needed    = states(_charge_needed_sensor) | float(0) %}
+                {% set power_kw  = states(_charge_power_entity) | float(5200) / 1000 %}
+                {% set eff       = states(_charge_efficiency_entity) | float(0.95) %}
+                {% set reset_h   = _reset_time[:2] | int %}
+                {% set hours     = needed / (power_kw * eff) if (power_kw * eff) > 0 else reset_h %}
+                {% set start_dec = [reset_h - hours, 0] | max %}
+                {% set h = start_dec | int %}
+                {% set m = ((start_dec - h) * 60) | int %}
+                {{ '%02d:%02d:00' % (h, m) }}
+          - action: input_datetime.set_datetime
+            target:
+              entity_id: !input night_start_entity
+            data:
+              time: "{{ start_time }}"
+          - if:
+              - condition: template
+                value_template: "{{ _notify | length > 0 }}"
+            then:
+              - action: "{{ _notify }}"
+                data:
+                  title: "🔋 Victron: Grid charging scheduled"
+                  message: >
+                    Needed: {{ states(_charge_needed_sensor) | round(1) }} kWh ·
+                    Start: {{ start_time[:5] }} ·
+                    SOC: {{ states(_battery_soc_sensor) | round(0) }}%
+                    {%- if _solcast_tomorrow_sensor | length > 0 %} ·
+                    Solar tomorrow: {{ states(_solcast_tomorrow_sensor) | round(1) }} kWh
+                    {%- endif %}
+          - if:
+              - condition: template
+                value_template: "{{ _last_reason_entity | length > 0 }}"
+            then:
+              - action: input_text.set_value
+                target:
+                  entity_id: !input last_reason_entity
+                data:
+                  value: >
+                    [{{ now().strftime('%Y-%m-%d %H:%M') }}]
+                    Needed: {{ states(_charge_needed_sensor) | round(1) }} kWh ·
+                    Start: {{ start_time[:5] }} ·
+                    SOC: {{ states(_battery_soc_sensor) | round(0) }}%
+                    {%- if _solcast_tomorrow_sensor | length > 0 %} ·
+                    Solar tomorrow: {{ states(_solcast_tomorrow_sensor) | round(1) }} kWh
+                    {%- endif %}
+
+      - conditions:
+          - condition: trigger
+            id: reset
+        sequence:
+          - action: input_datetime.set_datetime
+            target:
+              entity_id: !input night_start_entity
+            data:
+              time: "00:00:00"
+
+mode: single
