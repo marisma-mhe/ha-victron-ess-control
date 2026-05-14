@@ -1,12 +1,11 @@
 """Tests for VictronEssControlConfigFlow and VictronEssOptionsFlow."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
-
 import pytest
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.victron_ess_control.const import (
     CONF_BATTERY_CAPACITY,
@@ -29,9 +28,8 @@ VALID_INPUT = {
 
 def _mock_victron_mqtt_ok(hass: HomeAssistant) -> None:
     hass.config.components.add("victron_mqtt")
-    mock_entry = MagicMock()
-    mock_entry.domain = "victron_mqtt"
-    hass.config_entries._entries["victron_mqtt_fake"] = mock_entry
+    entry = MockConfigEntry(domain="victron_mqtt", title="Victron MQTT")
+    entry.add_to_hass(hass)
 
 
 @pytest.fixture(autouse=True)
@@ -104,7 +102,7 @@ async def test_user_step_victron_mqtt_not_configured(hass: HomeAssistant) -> Non
 
 async def test_user_step_packages_not_enabled(hass: HomeAssistant, tmp_path) -> None:
     _mock_victron_mqtt_ok(hass)
-    (tmp_path / "packages").rmdir()  # remove the dir created by autouse fixture
+    (tmp_path / "packages").rmdir()
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -145,8 +143,7 @@ async def test_user_step_success_single_system_consumer_defaults_to_grid(
         {**VALID_INPUT, CONF_CONSUMER_SERIAL: ""},
     )
     assert result["type"] == FlowResultType.CREATE_ENTRY
-    data = result["data"]
-    assert data[CONF_CONSUMER_SERIAL] == VALID_GRID_SERIAL
+    assert result["data"][CONF_CONSUMER_SERIAL] == VALID_GRID_SERIAL
 
 
 async def test_user_step_serial_normalized_to_lowercase(hass: HomeAssistant) -> None:
@@ -182,10 +179,7 @@ async def test_user_step_already_configured(hass: HomeAssistant) -> None:
 async def test_options_flow_shows_form_with_current_values(
     hass: HomeAssistant,
 ) -> None:
-    _mock_victron_mqtt_ok(hass)
-    entry = config_entries.ConfigEntry(
-        version=1,
-        minor_version=1,
+    entry = MockConfigEntry(
         domain=DOMAIN,
         title="Victron ESS Control",
         data={
@@ -194,11 +188,8 @@ async def test_options_flow_shows_form_with_current_values(
             CONF_BATTERY_CAPACITY: 15.0,
             CONF_CHARGE_EFFICIENCY: 0.92,
         },
-        source=config_entries.SOURCE_USER,
-        options={},
     )
-    entry._hass = hass
-    hass.config_entries._entries[entry.entry_id] = entry
+    entry.add_to_hass(hass)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["type"] == FlowResultType.FORM
@@ -209,9 +200,7 @@ async def test_options_flow_shows_form_with_current_values(
 
 
 async def test_options_flow_invalid_serial(hass: HomeAssistant) -> None:
-    entry = config_entries.ConfigEntry(
-        version=1,
-        minor_version=1,
+    entry = MockConfigEntry(
         domain=DOMAIN,
         title="Victron ESS Control",
         data={
@@ -220,11 +209,8 @@ async def test_options_flow_invalid_serial(hass: HomeAssistant) -> None:
             CONF_BATTERY_CAPACITY: 10.0,
             CONF_CHARGE_EFFICIENCY: 0.95,
         },
-        source=config_entries.SOURCE_USER,
-        options={},
     )
-    entry._hass = hass
-    hass.config_entries._entries[entry.entry_id] = entry
+    entry.add_to_hass(hass)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
@@ -236,9 +222,7 @@ async def test_options_flow_invalid_serial(hass: HomeAssistant) -> None:
 
 
 async def test_options_flow_success(hass: HomeAssistant) -> None:
-    entry = config_entries.ConfigEntry(
-        version=1,
-        minor_version=1,
+    entry = MockConfigEntry(
         domain=DOMAIN,
         title="Victron ESS Control",
         data={
@@ -247,18 +231,15 @@ async def test_options_flow_success(hass: HomeAssistant) -> None:
             CONF_BATTERY_CAPACITY: 10.0,
             CONF_CHARGE_EFFICIENCY: 0.95,
         },
-        source=config_entries.SOURCE_USER,
-        options={},
     )
-    entry._hass = hass
-    hass.config_entries._entries[entry.entry_id] = entry
+    entry.add_to_hass(hass)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {
             CONF_GRID_SERIAL: VALID_GRID_SERIAL,
-            CONF_CONSUMER_SERIAL: "",  # empty → defaults to grid serial
+            CONF_CONSUMER_SERIAL: "",
             CONF_BATTERY_CAPACITY: 20.0,
             CONF_CHARGE_EFFICIENCY: 0.90,
         },
@@ -278,11 +259,11 @@ async def test_options_flow_success(hass: HomeAssistant) -> None:
         ("C0619AB4EEC9", True),
         ("abcdef", True),
         ("1234567890abcdef", True),
-        ("12345", False),  # too short (5 chars)
-        ("12345678901234567", False),  # too long (17 chars)
+        ("12345", False),
+        ("12345678901234567", False),
         ("xyz!@#", False),
         ("", False),
-        ("  c0619ab4eec9  ", True),  # strip handled by caller
+        ("  c0619ab4eec9  ", True),
     ],
 )
 def test_validate_serial(serial: str, expected: bool) -> None:
