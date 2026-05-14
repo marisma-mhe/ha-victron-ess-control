@@ -1,8 +1,8 @@
 # ha-victron-ess-control
 
-Custom integration for Victron Energy ESS systems in Home Assistant. Provides guided setup (config flow), the helper/sensor package, and a package deployment wizard.
+Custom integration for Victron Energy ESS systems in Home Assistant. Provides guided setup (config flow), the helper/sensor package, and 9 automation blueprints — all deployed automatically on install.
 
-> **Blueprints and dashboard views** are in the companion repo **[ha-victron-ess-frontend](https://github.com/marisma-mhe/ha-victron-ess-frontend)** — install that via HACS (Blueprint category) after this integration.
+> **Dashboard views** are in the companion repo **[ha-victron-ess-frontend](https://github.com/marisma-mhe/ha-victron-ess-frontend)** — copy the YAML panels into your Lovelace dashboards after setup.
 
 ## Background
 
@@ -37,19 +37,10 @@ This setup and logic is generalised in the blueprints so it works for any Victro
 
 ## What This Repo Provides
 
-- **Guided setup wizard** — config flow collects serials, battery capacity; deploys `packages/victron_ess.yaml` with values filled in
+- **Guided setup wizard** — config flow collects serials, battery capacity; deploys the package with values filled in
 - **Helper + sensor package** (`packages/victron_ess.yaml`) — all `input_*` helpers, canonical `sensor.victron_ess_*` template sensors, utility meters
+- **9 automation blueprints** — deployed automatically to `blueprints/automation/victron/` on setup
 - **Manual installation path** — package file can be used standalone without the integration
-
-## What Goes in the Companion Repo
-
-All automation blueprints and Lovelace dashboard views live in **[ha-victron-ess-frontend](https://github.com/marisma-mhe/ha-victron-ess-frontend)**:
-
-- Daytime feed-in control, max feed-in power control
-- Smart overnight charging, pre-midnight decision
-- Storm mode auto-control, storm forecast fetch
-- MQTT keep-alive, daytime window
-- 5 Lovelace dashboard views
 
 ## Requirements
 
@@ -104,7 +95,7 @@ Two paths — choose one:
 
 #### A2. Install this component via HACS
 
-Add this repo to HACS as a custom repository (Integration category), then install **Victron ESS Control**.
+Search for **Victron ESS Control** in HACS → Integrations and install it.
 
 #### A3. Run the setup wizard
 
@@ -118,7 +109,7 @@ The wizard asks for:
 
 Find your serial in VRM Portal → Installation → Device List → GX Device, or from entity names created by ha-victron-mqtt (e.g. `sensor.victron_mqtt_**a1b2c3d4ef56**_system_0_system_dc_battery_soc`).
 
-On finish, the component writes `packages/victron_ess.yaml` with your serials filled in and installs the blueprints. A notification reminds you to restart.
+On finish, the component writes `packages/victron_ess.yaml` with your serials filled in and copies all 9 blueprints to `blueprints/automation/victron/`. A notification reminds you to restart.
 
 #### A4. Restart Home Assistant
 
@@ -126,11 +117,11 @@ All helpers and template sensors load after restart.
 
 #### A5. Create automation instances
 
-Settings → Automations → Blueprints — create one instance per blueprint (see [Blueprints](#blueprints) section below for recommended set).
+Settings → Automations → Blueprints — create one instance per blueprint (see [Blueprints](#blueprints) below for recommended set).
 
 #### A6. Add dashboard views (optional)
 
-See [Manual step 6](#6-add-dashboard-views-optional) below.
+See **[ha-victron-ess-frontend](https://github.com/marisma-mhe/ha-victron-ess-frontend)** for Lovelace YAML panels.
 
 ---
 
@@ -147,9 +138,9 @@ homeassistant:
 
 #### 2. Copy the package file
 
-Copy `packages/victron_ess.yaml` into your HA config's `packages/` directory.
+Copy `custom_components/victron_ess_control/packages/victron_ess.yaml` into your HA config's `packages/` directory.
 
-Open the file and replace the serial placeholders in the `mqtt:` section (around line 295):
+Open the file and replace the serial placeholders:
 
 ```yaml
 # Replace <YOUR_GRID_SYSTEM_ID> with your grid GX device serial
@@ -157,9 +148,7 @@ Open the file and replace the serial placeholders in the `mqtt:` section (around
 # (single-system: use the same serial for both)
 ```
 
-Find your serial in VRM Portal → Installation → Device List → GX Device, or from the entity names created by ha-victron-mqtt (e.g. `sensor.victron_mqtt_a1b2c3d4ef56_system_0_system_dc_battery_soc`).
-
-> **Note:** The MQTT sensor section is only needed if you enable "Direct MQTT Source" mode (`input_boolean.victron_ess_source_direct_mqtt`). By default the package uses ha-victron-mqtt entities and the serial is entered via the `input_text` helpers in the HA UI after restart.
+Find your serial in VRM Portal → Installation → Device List → GX Device, or from entity names created by ha-victron-mqtt (e.g. `sensor.victron_mqtt_a1b2c3d4ef56_system_0_system_dc_battery_soc`).
 
 #### 3. Restart Home Assistant
 
@@ -174,11 +163,11 @@ In HA → Settings → Helpers:
 
 #### 5. Install blueprints
 
-Copy the `blueprints/automation/victron/` directory into your HA config's `blueprints/automation/victron/` directory. Restart HA or reload blueprints.
+Copy `custom_components/victron_ess_control/blueprints/automation/victron/` into your HA config's `blueprints/automation/victron/` directory. Restart HA or reload blueprints.
 
 Alternatively, each blueprint's `source_url` field points to this repo — import them individually via HA → Settings → Automations → Blueprints → Import Blueprint.
 
-#### 5a. Create automation instances
+#### 6. Create automation instances
 
 Go to HA → Settings → Automations → Blueprints and create one instance of each blueprint you want to use. Recommended starting set:
 
@@ -190,11 +179,9 @@ Go to HA → Settings → Automations → Blueprints and create one instance of 
 6. **Victron Storm Mode Auto Control** — configure thresholds and weather entity
 7. **Victron Storm Forecast Fetch** — configure weather entity and schedule
 
-#### 6. Add dashboard views (optional)
+#### 7. Add dashboard views (optional)
 
-The `dashboards/` directory contains Lovelace YAML panels. Add them as YAML-mode dashboards or paste the card YAML into an existing dashboard.
-
-> **Note:** `dashboards/victron_overview_values.yaml` contains `[SITE-SPECIFIC]` markers for sensors that are not provided by this package (e.g. VRM-derived daily energy totals). Replace or remove those cards as needed.
+See **[ha-victron-ess-frontend](https://github.com/marisma-mhe/ha-victron-ess-frontend)** for Lovelace YAML panels.
 
 ## Blueprints
 
