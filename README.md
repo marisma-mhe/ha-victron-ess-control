@@ -39,7 +39,65 @@ Automation suite for Victron Energy ESS systems in Home Assistant. Provides smar
 
 ## Installation
 
-### 1. Enable HA Packages
+Two paths — choose one:
+
+| | Guided (Custom Component) | Manual |
+|---|---|---|
+| Serial entry | UI wizard | Edit YAML file |
+| Package deployment | Automatic | Copy file yourself |
+| Blueprint install | Automatic | Copy directory yourself |
+| Requires packages in config | Must exist beforehand | Must add yourself |
+
+---
+
+### Option A — Guided Installation (Custom Component)
+
+#### A1. Prerequisites
+
+1. Install **[ha-victron-mqtt](https://github.com/tomer-w/ha-victron-mqtt)** via HACS and configure it (Settings → Integrations → Add → Victron MQTT)
+2. Enable HA packages in `configuration.yaml`:
+   ```yaml
+   homeassistant:
+     packages: !include_dir_named packages
+   ```
+3. Create the `packages/` directory in your HA config if it doesn't exist
+4. Restart HA so the packages setting takes effect
+
+#### A2. Install this component via HACS
+
+Add this repo to HACS as a custom repository (Integration category), then install **Victron ESS Control**.
+
+#### A3. Run the setup wizard
+
+Settings → Integrations → Add Integration → **Victron ESS Control**
+
+The wizard asks for:
+- **Grid System Serial** — hexadecimal portal ID of the GX device connected to the grid meter
+- **Consumer System Serial** — leave empty for single-system (defaults to grid serial)
+- **Battery Capacity (kWh)**
+- **Charge Efficiency** (0.95 for lithium, 0.85 for lead-acid)
+
+Find your serial in VRM Portal → Installation → Device List → GX Device, or from entity names created by ha-victron-mqtt (e.g. `sensor.victron_mqtt_**a1b2c3d4ef56**_system_0_system_dc_battery_soc`).
+
+On finish, the component writes `packages/victron_ess.yaml` with your serials filled in and installs the blueprints. A notification reminds you to restart.
+
+#### A4. Restart Home Assistant
+
+All helpers and template sensors load after restart.
+
+#### A5. Create automation instances
+
+Settings → Automations → Blueprints — create one instance per blueprint (see [Blueprints](#blueprints) section below for recommended set).
+
+#### A6. Add dashboard views (optional)
+
+See [Manual step 6](#6-add-dashboard-views-optional) below.
+
+---
+
+### Option B — Manual Installation
+
+#### 1. Enable HA Packages
 
 Add to `configuration.yaml` (if not already present):
 
@@ -48,7 +106,7 @@ homeassistant:
   packages: !include_dir_named packages
 ```
 
-### 2. Copy the package file
+#### 2. Copy the package file
 
 Copy `packages/victron_ess.yaml` into your HA config's `packages/` directory.
 
@@ -64,24 +122,24 @@ Find your serial in VRM Portal → Installation → Device List → GX Device, o
 
 > **Note:** The MQTT sensor section is only needed if you enable "Direct MQTT Source" mode (`input_boolean.victron_ess_source_direct_mqtt`). By default the package uses ha-victron-mqtt entities and the serial is entered via the `input_text` helpers in the HA UI after restart.
 
-### 3. Restart Home Assistant
+#### 3. Restart Home Assistant
 
 All helpers (`input_text`, `input_number`, `input_boolean`, etc.) and template sensors appear after restart.
 
-### 4. Enter your system serial(s)
+#### 4. Enter your system serial(s)
 
 In HA → Settings → Helpers:
 
 - `Victron Grid System ID (portal serial)` → your grid GX serial (e.g. `a1b2c3d4ef56`)
 - `Victron Consumer System ID (portal serial)` → consumer GX serial (same value for single-system)
 
-### 5. Install blueprints
+#### 5. Install blueprints
 
 Copy the `blueprints/automation/victron/` directory into your HA config's `blueprints/automation/victron/` directory. Restart HA or reload blueprints.
 
-Alternatively, each blueprint's `source_url` field points to this repo — you can import them individually via HA → Settings → Automations → Blueprints → Import.
+Alternatively, each blueprint's `source_url` field points to this repo — import them individually via HA → Settings → Automations → Blueprints → Import Blueprint.
 
-### 6. Create automation instances
+#### 5a. Create automation instances
 
 Go to HA → Settings → Automations → Blueprints and create one instance of each blueprint you want to use. Recommended starting set:
 
@@ -93,7 +151,7 @@ Go to HA → Settings → Automations → Blueprints and create one instance of 
 6. **Victron Storm Mode Auto Control** — configure thresholds and weather entity
 7. **Victron Storm Forecast Fetch** — configure weather entity and schedule
 
-### 7. Add dashboard views (optional)
+#### 6. Add dashboard views (optional)
 
 The `dashboards/` directory contains Lovelace YAML panels. Add them as YAML-mode dashboards or paste the card YAML into an existing dashboard.
 
